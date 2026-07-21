@@ -54,8 +54,13 @@ fi
 echo "==> Synthesizing"
 npx cdk synth -c "stage=${STAGE}" "${PROFILE_ARGS[@]}" --quiet
 
-echo "==> Deploying all stacks for stage '${STAGE}'"
-npx cdk deploy --all -c "stage=${STAGE}" "${PROFILE_ARGS[@]}" --require-approval any-change
+# Default to prompting on any IAM/security change -- this script is meant to be
+# run by a human at a terminal. Override for CI or a non-interactive session:
+#   CDK_REQUIRE_APPROVAL=never ./scripts/deploy.sh dev
+REQUIRE_APPROVAL="${CDK_REQUIRE_APPROVAL:-any-change}"
+
+echo "==> Deploying all stacks for stage '${STAGE}' (--require-approval ${REQUIRE_APPROVAL})"
+npx cdk deploy --all -c "stage=${STAGE}" "${PROFILE_ARGS[@]}" --require-approval "${REQUIRE_APPROVAL}"
 
 echo ""
 echo "==> Done. Deployed stacks:"
