@@ -60,6 +60,23 @@ scripts/        deploy, synthetic data seeder
 - AWS CLI v2, authenticated
 - An AWS account you can bootstrap
 
+For the agent runtime (Step 3+):
+
+- Python 3.10+ (tested on 3.11.9)
+- **`uv`** (tested on 0.11.30) — `pip install uv`
+- AgentCore CLI, pinned: `npm install -g @aws/agentcore@0.24.1`
+
+> ⚠️ **`uv` is a hard requirement, not optional.** The upstream
+> `aws/agentcore-cli` README lists it as *"optional, for Python agent support"* —
+> that is wrong. `agentcore create` aborts outright without it:
+> `'uv' is required for Python projects`. Install it before Step 3.
+>
+> ⚠️ **Pin the AgentCore CLI to `0.24.1`** — not `@latest`, not `@preview`. npm
+> carries a `preview` dist-tag at `1.0.0-preview.22`; a floating install can
+> regenerate the agent project against a different config schema between
+> sessions and break a deploy that worked yesterday. See
+> [agent/runtime/README.md](agent/runtime/README.md).
+
 ## Deploy
 
 ```bash

@@ -18,6 +18,14 @@ cdk.context.json
 .env.*
 !.env.example
 
+# AgentCore deployment targets. The AwsDeploymentTarget schema requires a literal
+# 12-digit account id (^[0-9]{12}$) -- it accepts no token or env-var indirection,
+# unlike infra/ which resolves the account from CDK_DEFAULT_ACCOUNT at synth time.
+# This repo is public, so the real file stays out; aws-targets.example.json is the
+# tracked template. Globbed rather than path-pinned so it survives a project rename.
+agent/**/aws-targets.json
+!agent/**/aws-targets.example.json
+
 # Editor / OS
 .DS_Store
 Thumbs.db
