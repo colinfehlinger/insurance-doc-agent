@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# CDK
+cdk.out/
+# Ignored because this repo is public and cached context holds account ids / AZs.
+# No fromLookup calls exist yet. Revisit in the IDP step if that changes -- see README.
+cdk.context.json
+*.d.ts
+*.js
+!jest.config.js
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Environment / credentials -- never commit an account id, profile, or key
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+
+# Local scratch
+tmp/
+*.log

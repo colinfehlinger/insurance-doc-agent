@@ -1,0 +1,29 @@
+{
+  "name": "insurance-doc-agent-infra",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CDK infrastructure for the Document-Chase Agent",
+  "bin": {
+    "infra": "bin/app.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "typecheck": "tsc --noEmit",
+    "synth": "cdk synth -c stage=dev",
+    "diff": "cdk diff -c stage=dev",
+    "deploy": "cdk deploy --all -c stage=dev",
+    "destroy": "cdk destroy --all -c stage=dev",
+    "cdk": "cdk"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "aws-cdk": "2.1132.0",
+    "tsx": "^4.23.1",
+    "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.261.0",
+    "constructs": "^10.7.1"
+  }
+}
