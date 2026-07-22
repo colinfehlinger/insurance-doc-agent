@@ -12,14 +12,16 @@ export interface UnderstandingStackProps extends cdk.StackProps, IdaStackPropsBa
 
 /**
  * STUB -- placeholder for the classification and extraction half of the
- * deterministic pipeline.
+ * fixed pipeline.
  *
  * When this is real it will hold a Bedrock Data Automation project (blueprints
  * per document type), the Lambda that invokes it on new objects in the raw
- * bucket, and the writer that turns extracted fields into matter state. None of
- * that is agentic on purpose: extraction has to be reproducible and auditable,
- * so the model runs inside a fixed pipeline with confidence thresholds rather
- * than inside an agent loop.
+ * bucket, and the writer that turns extracted fields into matter state. There is
+ * no agentic loop here, on purpose: extraction has to be auditable, so the model
+ * runs inside a fixed code path with confidence thresholds and a human-review
+ * threshold below them -- never inside an agent loop. (BDA is itself
+ * GenAI-powered, which is why the claim is "fixed and auditable" rather than
+ * "deterministic" -- see docs/decisions/ADR-002-bda-vs-textract.md.)
  *
  * For now it publishes the SSM parameter that later stacks will read, so the
  * contract between steps exists before the implementation does.

@@ -19,7 +19,7 @@ const env: cdk.Environment = {
   region: config.region,
 };
 
-// --- Body: the deterministic pipeline -------------------------------------
+// --- Body: the fixed, auditable pipeline ----------------------------------
 
 const shared = new SharedStack(app, `${config.stackPrefix}-Shared`, {
   env,

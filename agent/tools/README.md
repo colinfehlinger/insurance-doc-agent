@@ -24,7 +24,7 @@ free-form "do this" parameter, no raw query passthrough. The agent chooses
 
 **`update_matter` is append-only.** The agent can add to the action history. It
 cannot overwrite the required-document list, a received document, or an
-extracted field — those belong to the deterministic pipeline. A tool that let
+extracted field — those belong to the fixed pipeline. A tool that let
 the agent edit extracted data would collapse the body/brain separation the whole
 design rests on.
 

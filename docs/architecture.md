@@ -2,12 +2,31 @@
 
 ## The one decision everything else follows from
 
-**The pipeline is deterministic. The agent owns only the judgment.**
+**The pipeline is fixed and auditable. The agent owns only the judgment.**
 
-Ingestion, classification, and extraction are a fixed pipeline — same input,
-same output, every time, with confidence scores and a human-review threshold.
-None of it is agentic, deliberately. A regulator asking "how did you get this
-field" needs an answer better than "the model decided."
+Ingestion, classification, and extraction run as a **fixed pipeline with
+confidence-scored extraction and mandatory human review below threshold**. The
+pipeline's shape never varies: every document follows the same path, every
+extracted field carries a confidence score, and anything below threshold routes
+to a person before it can touch matter state. Nothing in that path decides what
+to *do* — it only decides what a document *says*, and says so with a number
+attached.
+
+> **An honest qualification.** Bedrock Data Automation is GenAI-powered — a
+> foundation model sits inside this half of the system. So the earlier framing of
+> this as a *deterministic* pipeline overclaimed, and a compliance reviewer would
+> have caught it. What is actually true, and still meaningfully strong: the
+> pipeline is **fixed, auditable, and confidence-gated**, and no model in it
+> chooses an action. The distinction that matters for a regulator is not
+> "no model touched this" — it is "the same input follows the same path, the
+> system tells you how sure it is, and a human sees anything it is not sure
+> about." See [ADR-002](decisions/ADR-002-bda-vs-textract.md), which also defines
+> the reproducibility test that keeps this claim honest.
+
+A regulator asking "how did you get this field" gets: the source document, the
+extraction confidence, whether it crossed the review threshold, and who
+approved it if it did not. That is a defensible answer. "The model decided" is
+not.
 
 The agent is handed state that has already been established and answers one
 question: *what should happen next on this matter?* It can remind, wait,
@@ -21,7 +40,7 @@ failure mode most "AI back-office" demos ship with.
 
 ```mermaid
 flowchart TB
-    subgraph body["BODY — deterministic pipeline (auditable, reproducible)"]
+    subgraph body["BODY — fixed pipeline (auditable, confidence-gated)"]
         direction TB
         email["SES inbound email<br/>+ portal upload"]
         raw[("S3 raw bucket<br/>ida-dev-raw-*<br/>KMS, versioned, TLS-only")]

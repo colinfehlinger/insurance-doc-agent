@@ -9,12 +9,15 @@ Built in the open. Each step is a working, deployable increment.
 
 ## The design principle
 
-**The pipeline is deterministic. The agent owns only the judgment.**
+**The pipeline is a fixed, auditable code path. The agent owns only the judgment.**
 
-Ingestion, classification, and extraction run as a fixed, reproducible pipeline
-with confidence scores and a human-review threshold — no agent anywhere near
-them. "How did you get this field?" needs a better answer than "the model
-decided."
+Ingestion, classification, and extraction run as a fixed code path with
+confidence-scored extraction and mandatory human review below threshold.
+**There is no agentic loop in extraction** — nothing in that path chooses what
+to do next; it only decides what a document *says*, and attaches a number saying
+how sure it is. "How did you get this field?" is answered with the source
+document, the extraction confidence, whether it crossed the review threshold,
+and who approved it if it did not. Not "the model decided."
 
 The agent receives state that has already been established and answers exactly
 one question: *what should happen next on this matter?* It can remind, wait,
