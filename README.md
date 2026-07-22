@@ -69,7 +69,30 @@ scripts/        deploy, synthetic data seeder
 
 ## Prerequisites
 
-- Node 20+ (`.nvmrc` pins 20; tested on 20.19.6)
+- **Node 24 LTS** (`infra/.nvmrc` pins 24; tested on 24.18.0, npm 11.16.0)
+
+  > **Why the bump off Node 20.** The AWS SDK for JavaScript v3 requires
+  > **Node ≥22 for versions published after the first week of January 2027**, and
+  > the deprecation warning fired on every `cdk` and `agentcore` invocation. Node
+  > 20 reaches end-of-life around the same date. Moved now rather than under
+  > deadline mid-series.
+  >
+  > **Why 24 rather than 22.** `winget install OpenJS.NodeJS.LTS` installs
+  > **24** — Node 24 is the current LTS line and 22 has moved to maintenance. 24
+  > satisfies the ≥22 requirement with a longer support runway, so there was no
+  > reason to pin backwards. It also happens to align `@types/node` with the
+  > generated `agentcore/cdk/`, which was already on `^24`.
+  >
+  > ⚠️ **`.nvmrc` is inert on Windows — it is documentation, not enforcement.**
+  > No version manager is installed here; Node comes from the plain
+  > `C:\Program Files\nodejs` MSI. Note that **nvm-windows would not fix this**:
+  > unlike nvm for bash, it has no automatic `.nvmrc` read — that needs a
+  > hand-written shell hook. The file earns its keep for CI and for anyone
+  > cloning on another machine, not for local switching.
+  >
+  > If real enforcement is ever wanted, **fnm** is the option that actually does
+  > it: `winget install Schniz.fnm`, then enable `--use-on-cd` in the shell
+  > profile so entering the directory switches versions automatically.
 - AWS CLI v2, authenticated
 - An AWS account you can bootstrap
 
@@ -169,12 +192,18 @@ Pinned and verified against npm on 2026-07-21:
 | `constructs` | ^10.7.1 | |
 | `typescript` | ^5.7 | resolves 5.9.3 — **not** 7.x, see below |
 | `tsx` | ^4.23.1 | runner, matches the current `cdk init` template |
-| `@types/node` | ^20 | matched to the Node 20 runtime |
+| `@types/node` | ^24.10.1 | matched to the Node 24 runtime (resolves 24.13.3) |
 
 **The app command is `npx tsc && npx tsx bin/app.ts`.** `tsx` transpiles without
 type-checking, so the `tsc` half is not decoration — it is the type gate. Drop it
 and type errors sail straight through into a synth. Verified by breaking a type
 on purpose: synth fails with exit 1 before any template is written.
+
+**`@types/node` moved in lockstep with the runtime.** Leaving it at `^20` would
+have type-checked against a Node 20 stdlib on a Node 24 runtime, making newer
+APIs appear not to exist. Bumped to `^24.10.1` *after* the Node install was
+confirmed, so one `npm install` picked up matching types. No `engines` field is
+declared anywhere in the repo, so nothing else needed to move with it.
 
 **TypeScript is pinned to `^5.7` (resolves 5.9.3) on purpose.** Two separate
 things push toward 7.x and both are declined for now: `latest` on npm is 7.x, and

@@ -20,7 +20,7 @@ The two have already drifted:
 |---|---|---|
 | `aws-cdk-lib` | **2.261.0** (pinned exact) | `^2.248.0` (range) |
 | `aws-cdk` CLI | **2.1132.0** | **2.1126.0** (older) |
-| `@types/node` | `^20` (matches Node 20 runtime) | `^24.10.1` |
+| `@types/node` | `^24.10.1` | `^24.10.1` — *converged 2026-07-22 by the Node 24 bump, no longer a divergence* |
 | TypeScript | `^5.7` → 5.9.3 | `~5.9.3` → 5.9.3 *(these match)* |
 | `moduleResolution` | `NodeNext` | **`Node`** (node10) |
 | L3 constructs | none | `@aws/agentcore-cdk ^0.1.0-alpha.19` — **alpha** |
