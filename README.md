@@ -28,9 +28,9 @@ See [docs/architecture.md](docs/architecture.md) for the full picture.
 
 ## Status
 
-**Step 1 complete — repo scaffold and CDK skeleton.** Five stacks synthesize
-clean; three are real infrastructure, two are placeholders with the contracts
-already defined.
+**Steps 1–3 complete.** The pipeline skeleton is deployed to dev, and the
+AgentCore toolchain is proven end to end — a Runtime deployed with
+`agentcore deploy` and successfully invoked.
 
 | Stack | Contains | Status |
 |---|---|---|
@@ -41,7 +41,17 @@ already defined.
 | `Ida-Dev-Agent` | SSM placeholder `/ida/dev/agent/runtime-arn` | Stub |
 | `ViewStack` | Defined in [infra/lib/view-stack.ts](infra/lib/view-stack.ts), not instantiated | Later |
 
-Nothing has been deployed yet — the account is not bootstrapped.
+All five are `CREATE_COMPLETE` in dev (us-east-1). Deployed with
+`npx cdk deploy --all -c stage=dev`; no bootstrap was needed — the account was
+already at CDK bootstrap v29.
+
+**Agent runtime probe (Step 3).** A separate stack,
+`AgentCore-IdaAgentProbe-dev`, deployed by `agentcore deploy` rather than by
+`infra/`. Runtime status **READY**, invoked successfully. It shares no resources
+with the `Ida-Dev-*` stacks and does not collide with them or with the unrelated
+legacy workload in the same account. Kept deployed for Step 6 — AgentCore
+Runtime is consumption-billed with **no idle charge**. See
+[agent/runtime/README.md](agent/runtime/README.md).
 
 ## Layout
 
@@ -176,9 +186,25 @@ this build.
 ## Roadmap
 
 1. ~~Repo scaffold + CDK skeleton~~ ✅
-2. Prereqs and CDK app — confirm the full toolchain, stubs deploy cleanly
-3. Prove the AgentCore toolchain — minimal Runtime/Harness, invoked once
-   (designed around the container-image ordering gotcha)
+2. ~~Prereqs and CDK app — confirm the full toolchain, stubs deploy cleanly~~ ✅
+   — all five stacks `CREATE_COMPLETE` in dev, verified live in-account
+3. ~~Prove the AgentCore toolchain — minimal Runtime, invoked once~~ ✅
+
+   Runtime deployed via `agentcore deploy` (**not** `infra/`) and invoked
+   successfully; status **READY**. Model is **Amazon Nova Micro, probe-only** —
+   the scaffold's Claude Sonnet 4.5 default is gated behind an access form in
+   this account, and the probe tests the toolchain rather than model quality.
+   The production model is deliberately undecided; see
+   [ADR-001](docs/decisions/ADR-001-foundation-model.md).
+
+   > ⚠️ **The container-image ordering gotcha has not been solved — it has been
+   > sidestepped.** `CodeZip` builds upload a zip, so there is no image and no
+   > ordering problem. A `Container` build reintroduces it: a `CfnRuntime` will
+   > not resolve unless a valid image already exists at the referenced tag,
+   > which forces CodeBuild → wait → runtime. **Expect this back when the real
+   > agent needs a container** (custom system dependencies, a non-Python
+   > runtime, or anything CodeZip cannot package).
+
 4. IDP Accelerator triage — reuse `@cdklabs/genai-idp` +
    `@cdklabs/genai-idp-bda-processor` (Pattern 1 = BDA) for ingestion and
    extraction; the matter-state model and the agent stay hand-built

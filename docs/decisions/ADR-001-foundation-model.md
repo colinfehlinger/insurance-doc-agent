@@ -63,6 +63,27 @@ confirmed invokable (`stopReason: end_turn`, 696ms vs Sonnet's 1518ms).
 **Production: deferred to Step 5**, when there is a real tool surface and
 synthetic matters to evaluate against. Choosing now would be guessing.
 
+### What the probe did *not* validate
+
+The probe ran on the Strands scaffold's **default** tools — a calculator and a
+web fetcher, plus a sample `add_numbers` function. Its reply to a plain "hello"
+advertised exactly that: *"I can help with calculations, finding information
+online, or any other tasks within my capabilities."*
+
+**That is not the action surface this agent will ever have.** Those defaults get
+replaced wholesale by the five document-chase tools — `send_reminder`,
+`schedule_followup`, `escalate_to_human`, `update_matter`, `flag_anomaly` (see
+`agent/tools/README.md`).
+
+So the probe validated the **toolchain** — create → deploy → invoke, a Runtime
+reaching READY, an execution role with the right grants, a model returning
+coherent text. It validated **nothing about tool selection**, which is the only
+thing that matters for the model decision this ADR defers. A model that answers
+"hello" fluently tells you nothing about whether it will pick
+`escalate_to_human` over `send_reminder` when a due date has passed.
+
+Read no signal about Nova Micro's suitability from the probe succeeding.
+
 ## Measurement criteria (Step 5)
 
 Run the same synthetic matter set — the branch-covering set from
