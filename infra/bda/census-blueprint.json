@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "class": "GroupBenefitsCensus",
+  "description": "An employee census supporting a group benefits renewal: the employer, the group/policy identifiers, the plan effective date, and the enrolled employee headcount. These identifying fields are what make document->matter correlation verifiable (ADR-005) -- they let a human confirm an association, they never create one automatically.",
+  "type": "object",
+  "definitions": {
+    "EmployeeRow": {
+      "type": "object",
+      "properties": {
+        "employeeName": {
+          "type": "string",
+          "inferenceType": "explicit",
+          "instruction": "Full name of the enrolled employee as printed on the census row."
+        },
+        "coverageTier": {
+          "type": "string",
+          "inferenceType": "explicit",
+          "instruction": "Coverage tier for this employee, e.g. Employee Only, Employee+Spouse, Family."
+        }
+      }
+    }
+  },
+  "properties": {
+    "employerName": {
+      "type": "string",
+      "inferenceType": "explicit",
+      "instruction": "The legal name of the employer / group sponsor this census belongs to."
+    },
+    "groupNumber": {
+      "type": "string",
+      "inferenceType": "explicit",
+      "instruction": "The group number or policy identifier printed on the census. This is the primary correlation field. If absent, leave empty -- do not infer it from the employer name."
+    },
+    "planEffectiveDate": {
+      "type": "string",
+      "inferenceType": "explicit",
+      "instruction": "The plan or renewal effective date, in ISO 8601 (YYYY-MM-DD) if determinable."
+    },
+    "employeeCount": {
+      "type": "number",
+      "inferenceType": "inferred",
+      "instruction": "The total number of enrolled employees represented on this census."
+    },
+    "employees": {
+      "type": "array",
+      "inferenceType": "explicit",
+      "instruction": "One entry per enrolled employee row on the census.",
+      "items": { "$ref": "#/definitions/EmployeeRow" }
+    }
+  }
+}

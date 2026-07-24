@@ -46,7 +46,8 @@ new UnderstandingStack(app, `${config.stackPrefix}-Understanding`, {
   config,
   dataKey: shared.dataKey,
   rawBucket: ingestion.rawBucket,
-  description: `STUB: Bedrock Data Automation classification and extraction (${config.stackPrefix}).`,
+  matterTable: state.matterTable,
+  description: `Bedrock Data Automation classification and extraction (${config.stackPrefix}).`,
 });
 
 // --- Brain: the agent ------------------------------------------------------

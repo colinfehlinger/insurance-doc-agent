@@ -1,5 +1,12 @@
+import * as path from 'path';
 import * as cdk from 'aws-cdk-lib';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as bedrock from 'aws-cdk-lib/aws-bedrock';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
@@ -8,122 +15,205 @@ import { IdaStackPropsBase } from './config';
 export interface UnderstandingStackProps extends cdk.StackProps, IdaStackPropsBase {
   readonly dataKey: kms.IKey;
   readonly rawBucket: s3.IBucket;
+  readonly matterTable: dynamodb.ITable;
 }
 
 /**
- * STUB -- placeholder for the classification and extraction half of the
- * fixed pipeline.
+ * The classification and extraction half of the fixed pipeline.
  *
- * When this is real it will hold a Bedrock Data Automation project (blueprints
- * per document type), the Lambda that invokes it on new objects in the raw
- * bucket, and the writer that turns extracted fields into matter state. There is
- * no agentic loop here, on purpose: extraction has to be auditable, so the model
- * runs inside a fixed code path with confidence thresholds and a human-review
- * threshold below them -- never inside an agent loop. (BDA is itself
+ * There is no agentic loop here, on purpose: extraction has to be auditable, so
+ * the model (Bedrock Data Automation) runs inside a fixed code path with a
+ * human-review confidence threshold -- never inside an agent loop. BDA is itself
  * GenAI-powered, which is why the claim is "fixed and auditable" rather than
- * "deterministic" -- see docs/decisions/ADR-002-bda-vs-textract.md.)
+ * "deterministic" (docs/decisions/ADR-002-bda-vs-textract.md).
  *
- * For now it publishes the SSM parameter that later stacks will read, so the
- * contract between steps exists before the implementation does.
+ * Shape (Step 5 thin slice):
+ *
+ *   raw bucket --(S3 EventBridge "Object Created")--> Submit Lambda
+ *     Submit: resolve_matter(key) [ADR-005], then InvokeDataAutomationAsync with
+ *             a deterministic clientToken, our CMK, and eventBridgeEnabled. No
+ *             polling.
+ *   BDA --(EventBridge "Job Succeeded/Failed*")--> Mapper Lambda
+ *     Mapper: read extracted fields + confidence, resolve_matter again, write
+ *             the matter's DOC# row (>= threshold = received, else in-review) or
+ *             a TRIAGE row if unassociated.
+ *
+ * We call the BDA APIs directly rather than adopt the accelerator (ADR-004); the
+ * retry/backoff/error-classification patterns and metric names are lifted from
+ * its source (docs/bda-orchestration-reference.md).
  */
 export class UnderstandingStack extends cdk.Stack {
-  /** SSM parameter that will hold the BDA project ARN once it exists. */
   public readonly bdaProjectArnParam: ssm.StringParameter;
-
-  /** Threaded through now so the pipeline step does not have to reshape the app. */
-  public readonly dataKey: kms.IKey;
-  public readonly rawBucket: s3.IBucket;
+  public readonly bdaProject: bedrock.CfnDataAutomationProject;
 
   constructor(scope: Construct, id: string, props: UnderstandingStackProps) {
     super(scope, id, props);
 
-    const { config } = props;
-    this.dataKey = props.dataKey;
-    this.rawBucket = props.rawBucket;
+    const { config, dataKey, rawBucket, matterTable } = props;
+    const metricNamespace = `Ida/${config.stage}/Understanding`;
+    const outputPrefix = 'bda-output';
 
+    // The US cross-region inference profile BDA runs through. Objects stay in
+    // us-east-1 but inference may traverse us-east-1/2 and us-west-1/2 -- recorded
+    // in the data-residency section of docs/architecture.md.
+    const bdaProfileArn = `arn:aws:bedrock:${this.region}:${this.account}:data-automation-profile/us.data-automation-v1`;
+
+    // --- BDA project + census blueprint --------------------------------------
+    // One blueprint for this slice: the group-benefits census, chosen over the
+    // SBC because it is matter-central and carries the identifying fields
+    // (group number, employer) that make correlation real. `schema` is untyped
+    // (any) so it is not synth-validated; BDA validates it at deploy.
+    const censusSchema = JSON.parse(
+      require('fs').readFileSync(path.join(__dirname, '..', 'bda', 'census-blueprint.json'), 'utf-8'),
+    );
+
+    const censusBlueprint = new bedrock.CfnBlueprint(this, 'CensusBlueprint', {
+      blueprintName: `${config.resourcePrefix}-census`,
+      type: 'DOCUMENT',
+      schema: censusSchema,
+      kmsKeyId: dataKey.keyArn,
+    });
+
+    this.bdaProject = new bedrock.CfnDataAutomationProject(this, 'BdaProject', {
+      projectName: `${config.resourcePrefix}-idp`,
+      projectDescription: 'Classifies and extracts group-benefits documents for the Document-Chase Agent.',
+      kmsKeyId: dataKey.keyArn,
+      customOutputConfiguration: {
+        blueprints: [{ blueprintArn: censusBlueprint.attrBlueprintArn }],
+      },
+    });
+
+    // --- Submit Lambda -------------------------------------------------------
+    const submitFn = new lambda.Function(this, 'SubmitFn', {
+      functionName: `${config.resourcePrefix}-bda-submit`,
+      runtime: lambda.Runtime.PYTHON_3_13,
+      handler: 'index.handler',
+      // Plain asset, no bundling -- boto3 is in the runtime, so no Docker is
+      // needed (the property ADR-004 preserved by not adopting the accelerator).
+      code: lambda.Code.fromAsset(path.join(__dirname, '..', 'lambdas', 'submit')),
+      timeout: cdk.Duration.seconds(60),
+      memorySize: 256,
+      environment: {
+        BDA_PROJECT_ARN: this.bdaProject.attrProjectArn,
+        BDA_PROFILE_ARN: bdaProfileArn,
+        OUTPUT_BUCKET: rawBucket.bucketName,
+        OUTPUT_PREFIX: outputPrefix,
+        KMS_KEY_ARN: dataKey.keyArn,
+        METRIC_NAMESPACE: metricNamespace,
+      },
+    });
+
+    // BDA runs as the caller's role (CloudTrail shows invokedBy bedrock.amazonaws.com
+    // assuming this role), so this role needs read on the input and write on the
+    // output prefix, plus the KMS permissions below.
+    rawBucket.grantReadWrite(submitFn);
+
+    // Customer-managed-key access for BDA, per the documented grant flow
+    // (docs.aws.amazon.com/bedrock/latest/userguide/encryption-bda.html): when
+    // encryptionConfiguration.kmsKeyId is a CMK, BDA -- acting as this role --
+    // calls kms:CreateGrant, and uses DescribeKey/GenerateDataKey/Decrypt. The
+    // ViaService condition scopes these to Bedrock, matching the AWS example.
+    //
+    // NOTE: this lives here, on the caller's role, NOT in SharedStack. The shared
+    // key's DEFAULT key policy already delegates to IAM via the root-account
+    // statement, so an IAM grant on this role is sufficient and idiomatic. Adding
+    // a key-policy statement in SharedStack that named this role would create a
+    // circular dependency (Shared -> role, Understanding -> key). grantReadWrite
+    // already covers Decrypt/GenerateDataKey; this adds CreateGrant + DescribeKey.
+    dataKey.grant(submitFn, 'kms:CreateGrant', 'kms:DescribeKey');
+    submitFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['bedrock:InvokeDataAutomationAsync'],
+        resources: [
+          this.bdaProject.attrProjectArn,
+          // The CRIS profile must be permitted in every region it can route to.
+          `arn:aws:bedrock:us-east-1:${this.account}:data-automation-profile/us.data-automation-v1`,
+          `arn:aws:bedrock:us-east-2:${this.account}:data-automation-profile/us.data-automation-v1`,
+          `arn:aws:bedrock:us-west-1:${this.account}:data-automation-profile/us.data-automation-v1`,
+          `arn:aws:bedrock:us-west-2:${this.account}:data-automation-profile/us.data-automation-v1`,
+        ],
+      }),
+    );
+    submitFn.addToRolePolicy(
+      new iam.PolicyStatement({ actions: ['cloudwatch:PutMetricData'], resources: ['*'] }),
+    );
+
+    // --- Mapper Lambda -------------------------------------------------------
+    const mapperFn = new lambda.Function(this, 'MapperFn', {
+      functionName: `${config.resourcePrefix}-bda-mapper`,
+      runtime: lambda.Runtime.PYTHON_3_13,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(path.join(__dirname, '..', 'lambdas', 'mapper')),
+      timeout: cdk.Duration.seconds(60),
+      memorySize: 256,
+      environment: {
+        MATTER_TABLE: matterTable.tableName,
+        CONFIDENCE_THRESHOLD: String(config.extractionConfidenceThreshold),
+        METRIC_NAMESPACE: metricNamespace,
+        DOC_TYPE: 'census',
+      },
+    });
+
+    rawBucket.grantRead(mapperFn);
+    matterTable.grantReadWriteData(mapperFn);
+    dataKey.grantEncryptDecrypt(mapperFn);
+    mapperFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['bedrock:GetDataAutomationStatus'],
+        resources: ['*'], // status is queried by invocation ARN, not resource-scoped
+      }),
+    );
+    mapperFn.addToRolePolicy(
+      new iam.PolicyStatement({ actions: ['cloudwatch:PutMetricData'], resources: ['*'] }),
+    );
+
+    // --- Event wiring --------------------------------------------------------
+    // S3 Object Created -> Submit. Match the ingestion prefixes only, so BDA's
+    // own writes under bda-output/ never re-trigger the pipeline. `unassociated/`
+    // is included so the triage path is exercisable end to end.
+    new events.Rule(this, 'ObjectCreatedRule', {
+      ruleName: `${config.resourcePrefix}-object-created`,
+      eventPattern: {
+        source: ['aws.s3'],
+        detailType: ['Object Created'],
+        detail: {
+          bucket: { name: [rawBucket.bucketName] },
+          object: { key: [{ prefix: 'matters/' }, { prefix: 'unassociated/' }] },
+        },
+      },
+      targets: [new targets.LambdaFunction(submitFn)],
+    });
+
+    // BDA completion -> Mapper. Three of the four detail-types; "Job Created" is
+    // deliberately not subscribed.
+    new events.Rule(this, 'BdaCompletionRule', {
+      ruleName: `${config.resourcePrefix}-bda-completion`,
+      eventPattern: {
+        source: ['aws.bedrock'],
+        detailType: [
+          'Bedrock Data Automation Job Succeeded',
+          'Bedrock Data Automation Job Failed With Client Error',
+          'Bedrock Data Automation Job Failed With Service Error',
+        ],
+      },
+      targets: [new targets.LambdaFunction(mapperFn)],
+    });
+
+    // --- SSM contract --------------------------------------------------------
     this.bdaProjectArnParam = new ssm.StringParameter(this, 'BdaProjectArnParam', {
       parameterName: `${config.ssmPrefix}/bda/project-arn`,
-      stringValue: 'PLACEHOLDER-NOT-YET-PROVISIONED',
-      description:
-        'ARN of the Bedrock Data Automation project used to classify and extract benefit documents.',
+      stringValue: this.bdaProject.attrProjectArn,
+      description: 'ARN of the Bedrock Data Automation project used to classify and extract benefit documents.',
     });
 
-    // TODO(thin-slice step): build this directly. The Step 4 triage decided
-    // AGAINST adopting the CDK-native accelerator (@cdklabs/genai-idp +
-    // @cdklabs/genai-idp-bda-processor) -- see ADR-004 and
-    // docs/idp-accelerator-triage.md. Short version: it composes fine (it takes
-    // our bucket and CMK as props) but it is a 59-Lambda product carrying five
-    // ALPHA CDK peer dependencies, and it would take infra/ from 6 direct
-    // dependencies to 14+ and make Docker a prerequisite for `cdk synth` -- to
-    // use roughly three Lambdas' worth of behaviour.
-    //
-    // What to build instead -- EVENT-DRIVEN, not a poll loop. BDA supports
-    // EventBridge completion notifications natively, so there is no polling to
-    // write or to get wrong:
-    //  - Submit Lambda: S3 event -> InvokeDataAutomationAsync with
-    //    clientToken (idempotency; duplicate S3 events are real) and
-    //    notificationConfiguration.eventBridgeConfiguration.eventBridgeEnabled
-    //    = true. Pass our CMK via encryptionConfiguration.kmsKeyId.
-    //  - EventBridge rule on source 'aws.bedrock', detail-types:
-    //      Bedrock Data Automation Job Succeeded
-    //      Bedrock Data Automation Job Failed With Client Error   <- non-retryable
-    //      Bedrock Data Automation Job Failed With Service Error  <- retryable
-    //    The client/service split IS our error classification -- take it from
-    //    the event type rather than inferring it from an exception.
-    //  - Completion Lambda: parse the result -> hand classified type + fields +
-    //    per-field confidence to a matter-state mapper.
-    //  - One Data Automation Project + one blueprint per document class, created
-    //    by us (the accelerator would have generated these at synth time).
-    //
-    // Step 5 PREREQUISITE, before writing any BDA call (see ADR-004): extract
-    // the accelerator's SUBMIT-SIDE throttle/retry/backoff and error
-    // classification from bda-invoke / bda-completion / bda-processresults
-    // (Apache-2.0; `npm pack` and read, no dependency added). Their polling
-    // machinery is moot -- EventBridge replaces it. Emit their metric set from
-    // day one (Throttles, RetrySuccess, MaxRetriesExceeded, NonRetryableErrors,
-    // JobsSucceeded/Failed) or ADR-004's reversal trigger is unmeasurable.
-    //
-    // Notes carried forward:
-    //  - BDA is invoked through the US cross-region inference profile
-    //    arn:aws:bedrock:us-east-1:<account>:data-automation-profile/us.data-automation-v1.
-    //    Objects stay in us-east-1, but inference may traverse us-east-1,
-    //    us-east-2, us-west-1 and us-west-2. This must be written down in the
-    //    data-residency section of the audit docs before any real PHI/PII lands.
-    //  - Confidence scores below the per-field threshold route to human review
-    //    instead of writing straight to matter state.
-    //  - Expose exactly one thing to the rest of the system: classified type +
-    //    extracted fields + per-field confidence. No BDA-shaped types reach the
-    //    matter-state writer. That narrow seam is what keeps BOTH the ADR-002
-    //    processor swap (BDA -> Textract) and the ADR-004 reversal (direct ->
-    //    accelerator) cheap.
-    //  - Instrument the BDA calls from day one (throttles, retries, retries
-    //    exhausted, non-retryable errors). ADR-004's primary reversal trigger is
-    //    "our orchestration proves unreliable" -- unmeasurable without metrics.
-    //  - BOUNDARY GUARD, because the type system gives none. The accelerator's
-    //    `ITrackingTable extends ITable` adds NO members, so passing
-    //    ida-dev-matters where a tracking table is expected would COMPILE
-    //    CLEANLY and then write processing-status items into the product's
-    //    system of record. Processing status and matter state stay in separate
-    //    tables with separate lifecycles: processing status is transient (365-day
-    //    default retention in their model), matter state is indefinite -- it IS
-    //    the record. If ADR-004 is ever reversed, the accelerator gets its own
-    //    tracking table and we let it.
-    //      A document can process perfectly and leave a matter incomplete.
-    //    The converse holds too: a matter can be complete while a processing job
-    //    failed and was retried. The two never model each other.
-    //  - CORRELATION (ADR-005) -- decide the mechanism BEFORE the ingestion
-    //    design, not during it. Nothing on a document says which matter it
-    //    belongs to. Decision: correlation is established at INGESTION and
-    //    carried as metadata; extracted fields may VERIFY an association but
-    //    never CREATE one; unassociated documents go to a human triage queue
-    //    rather than being matched by guessing. Content-based matching is the
-    //    option that produces confident wrong answers, and a misattributed
-    //    document means the agent chases the wrong renewal -- outbound, and
-    //    credibility-ending. Unattributed is a cost; misattributed is a defect.
-
-    new cdk.CfnOutput(this, 'BdaProjectArnParamName', {
-      value: this.bdaProjectArnParam.parameterName,
-      description: 'SSM parameter that will hold the BDA project ARN.',
+    new ssm.StringParameter(this, 'ConfidenceThresholdParam', {
+      parameterName: `${config.ssmPrefix}/bda/confidence-threshold`,
+      stringValue: String(config.extractionConfidenceThreshold),
+      description: 'Per-field extraction confidence below which a document routes to human review (ADR-002).',
     });
+
+    new cdk.CfnOutput(this, 'BdaProjectArn', { value: this.bdaProject.attrProjectArn });
+    new cdk.CfnOutput(this, 'SubmitFnName', { value: submitFn.functionName });
+    new cdk.CfnOutput(this, 'MapperFnName', { value: mapperFn.functionName });
   }
 }

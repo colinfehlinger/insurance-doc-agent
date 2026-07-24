@@ -13,11 +13,38 @@ export interface StateStackProps extends cdk.StackProps, IdaStackPropsBase {
  * received, which are still missing, when they are due, and what has already
  * been done about it.
  *
- * This is the source of truth the agent reasons over. The pipeline writes it
- * deterministically; the agent reads it and appends actions.
+ * This is the source of truth the agent reasons over. The pipeline writes it;
+ * the agent reads it and appends actions.
+ *
+ * SINGLE-TABLE DESIGN (introduced in the thin slice, Step 5):
+ *
+ *   PK = MATTER#<matterId>
+ *     SK = META                 one row  -- matter metadata + rollup status
+ *     SK = DOC#<docType>        one per required document -- status, dueDate,
+ *                               sourceKey, extraction confidence
+ *     SK = ACTION#<isoTs>       append-only agent/human action history
+ *
+ *   PK = TRIAGE
+ *     SK = DOC#<documentId>     a document that arrived but could not be
+ *                               associated with a matter (ADR-005). Carries the
+ *                               extracted fields so a human can place it -- the
+ *                               fields VERIFY, they do not auto-associate.
+ *
+ *   GSI1 (missing-docs-by-due-date, and the triage queue):
+ *     GSI1PK = STATUS#<status>  e.g. STATUS#missing, STATUS#needs_triage
+ *     GSI1SK = DUE#<dueDate>    (missing docs) | RECEIVED#<isoTs> (triage)
+ *
+ *   GSI1 lets the scheduled sweep answer "which documents are missing, ordered
+ *   by due date" as a query rather than a table scan, and lets the readout count
+ *   the triage queue with a single query. The sweep is not built in this slice --
+ *   the GSI is included now, knowingly ahead of need, because adding it later
+ *   would force a second table recreate (see ADR / build plan).
  */
 export class StateStack extends cdk.Stack {
   public readonly matterTable: dynamodb.Table;
+
+  /** GSI name, exported so Lambdas and scripts do not hard-code the string. */
+  public static readonly GSI1_NAME = 'GSI1';
 
   constructor(scope: Construct, id: string, props: StateStackProps) {
     super(scope, id, props);
@@ -26,7 +53,8 @@ export class StateStack extends cdk.Stack {
 
     this.matterTable = new dynamodb.Table(this, 'MatterTable', {
       tableName: `${config.resourcePrefix}-matters`,
-      partitionKey: { name: 'matterId', type: dynamodb.AttributeType.STRING },
+      partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
       encryptionKey: dataKey,
@@ -34,12 +62,12 @@ export class StateStack extends cdk.Stack {
       removalPolicy: config.retainData ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
     });
 
-    // TODO(thin-slice step): replace this partition-key-only table with the real
-    // single-table design -- a sort key (DOC#<type>, ACTION#<ts>, META) plus a GSI
-    // for "missing documents by due date" so the scheduled sweep is a query rather
-    // than a scan. That change recreates the table, which is why it is deferred
-    // until there is a schema worth committing to. Acceptable in dev; prod would
-    // need a migration.
+    this.matterTable.addGlobalSecondaryIndex({
+      indexName: StateStack.GSI1_NAME,
+      partitionKey: { name: 'GSI1PK', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'GSI1SK', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
 
     new cdk.CfnOutput(this, 'MatterTableName', {
       value: this.matterTable.tableName,

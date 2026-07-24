@@ -42,6 +42,27 @@ export class AgentStack extends cdk.Stack {
       description: 'ARN of the Bedrock AgentCore runtime that decides the next action per matter.',
     });
 
+    // Messaging config for the agent's send_reminder tool. Kept as SSM parameters
+    // (sourced from config.ts), never hard-coded in Lambda/agent source, so the
+    // recipient and sender change per stage without a code change.
+    //   NOTE: senderAddress is not yet a verified SES identity. SES production
+    //   access is enabled on this account, but a From address still needs the
+    //   address or its domain verified before it can send. As of 2026-07-22 the
+    //   only verified identity is test-recipient@example.com; fehlingerops.com is
+    //   not registered (ADR-005 domain track). Point senderAddress at the gmail
+    //   to actually send before the domain exists.
+    new ssm.StringParameter(this, 'ReminderRecipientParam', {
+      parameterName: `${config.ssmPrefix}/messaging/test-recipient`,
+      stringValue: config.messaging.testRecipient,
+      description: 'Where send_reminder delivers in this stage (dev: single test recipient).',
+    });
+
+    new ssm.StringParameter(this, 'ReminderSenderParam', {
+      parameterName: `${config.ssmPrefix}/messaging/sender-address`,
+      stringValue: config.messaging.senderAddress,
+      description: 'From address for send_reminder. Must be a verified SES identity before it can send.',
+    });
+
     // TODO(AgentCore step): stand up the real runtime. Confirmed surface as of
     // July 2026 -- re-check before writing it, this service moves fast:
     //

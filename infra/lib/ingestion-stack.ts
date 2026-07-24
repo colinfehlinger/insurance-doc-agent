@@ -32,14 +32,20 @@ export class IngestionStack extends cdk.Stack {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       enforceSSL: true,
       versioned: true,
+      // Emit S3 events to the default EventBridge bus. The submit Lambda (in the
+      // understanding stack) subscribes via an EventBridge rule rather than a
+      // bucket notification, so the producer (this bucket) and the consumer stay
+      // in separate stacks without a cross-stack notification dependency.
+      eventBridgeEnabled: true,
       removalPolicy: config.retainData ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: !config.retainData,
     });
 
-    // TODO(ingestion step): SES inbound receipt rule writing to this bucket,
-    // an EventBridge notification to kick off Bedrock Data Automation, a
-    // lifecycle rule moving raw objects to Glacier after the retention window,
-    // and a separate server-access-log bucket.
+    // TODO(ingestion step): SES inbound receipt rule writing to this bucket
+    // (blocked on the ADR-005 domain track), a lifecycle rule moving raw objects
+    // to Glacier after the retention window, and a separate server-access-log
+    // bucket. The EventBridge notification that kicks off BDA is now wired (see
+    // eventBridgeEnabled above + the understanding stack).
 
     new cdk.CfnOutput(this, 'RawBucketName', {
       value: this.rawBucket.bucketName,
