@@ -216,3 +216,64 @@ likely have copied had we merely imitated the shape of their code.
 
 **Reading it was worth it, and reading it critically rather than reverently was
 what made it worth it.**
+
+---
+
+## First-deploy findings — two BDA contracts confirmed against the real API
+
+The first `cdk deploy` failed at `AWS::Bedrock::Blueprint` with
+`Request has invalid blueprint schema` (400). Rather than iterate through
+minutes-long CloudFormation round-trips, the schema was fixed against
+`aws bedrock-data-automation create-blueprint` directly (seconds per attempt),
+then ported back to CDK. Two contracts are now confirmed, not defensively
+guessed. Both were on the Step 5 watch-list; both are resolved.
+
+### 1. Blueprint schema — resolved
+
+The BDA custom-blueprint format (confirmed against the API, and cross-checked
+against the accelerator's `schema_converter.py`):
+
+- Required top-level keys: `$schema` (draft-07), `description`, `class`,
+  `type: "object"`, `definitions`, `properties`.
+- **Leaf/scalar fields** carry `type`, `inferenceType`, and `instruction`.
+- `inferenceType` accepts **both `"explicit"` and `"inferred"`** — isolated by
+  test; `"inferred"` is valid and is used for `employee_count`, which is derived
+  rather than read verbatim.
+- **List fields** are an array property with `type: "array"`, an `instruction`,
+  and `items: { "$ref": "#/definitions/<Name>" }`, plus a matching object entry
+  under `definitions`.
+
+**The killer, isolated precisely:** `inferenceType` must **not** appear on an
+array (or `$ref`) property — only on leaf fields. The original schema had
+`inferenceType: "explicit"` on the `employees` array. A minimal test with the
+array reduced to a bare `type/instruction/items` succeeded; adding
+`inferenceType` back to the array reproduced the 400. That single misplaced key
+caused the rollback.
+
+Confirmed non-issues: the schema is passed to CFN as a JSON **object** (CDK/CFN
+serializes it — the original deploy reached the API and failed on *content*, not
+type), and field-name casing is not significant (snake_case now, matching the
+accelerator convention).
+
+### 2. DataAutomationProject requires `standardOutputConfiguration` — resolved
+
+Caught before it could cause a *second* rollback. The project never reached
+creation on the first deploy (the blueprint failed first), so its config was
+untested. Testing `create-data-automation-project` directly showed the API
+**requires `standardOutputConfiguration`** even though the CDK L1
+(`CfnDataAutomationProject`) marks it optional. A project with only
+`customOutputConfiguration` is rejected. A minimal document extraction block was
+added:
+
+```
+standardOutputConfiguration.document.extraction.granularity.types = ["DOCUMENT"]
+                                     .extraction.boundingBox.state  = "DISABLED"
+                                     .generativeField.state         = "DISABLED"
+```
+
+The custom blueprint still drives the actual field pull; the standard config is
+the API-required floor. A test project referencing the fixed blueprint created
+successfully with both blocks present.
+
+All throwaway `ida-test-*` blueprints and projects created during this
+iteration were deleted afterward.

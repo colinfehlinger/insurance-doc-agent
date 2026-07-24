@@ -1,18 +1,18 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Group benefits employee census supporting a renewal. The employer name and group number are the identifying fields used to confirm which matter this census belongs to (ADR-005): they let a human verify an association, they never create one automatically.",
   "class": "GroupBenefitsCensus",
-  "description": "An employee census supporting a group benefits renewal: the employer, the group/policy identifiers, the plan effective date, and the enrolled employee headcount. These identifying fields are what make document->matter correlation verifiable (ADR-005) -- they let a human confirm an association, they never create one automatically.",
   "type": "object",
   "definitions": {
     "EmployeeRow": {
       "type": "object",
       "properties": {
-        "employeeName": {
+        "employee_name": {
           "type": "string",
           "inferenceType": "explicit",
-          "instruction": "Full name of the enrolled employee as printed on the census row."
+          "instruction": "Full name of the enrolled employee on this row."
         },
-        "coverageTier": {
+        "coverage_tier": {
           "type": "string",
           "inferenceType": "explicit",
           "instruction": "Coverage tier for this employee, e.g. Employee Only, Employee+Spouse, Family."
@@ -21,29 +21,28 @@
     }
   },
   "properties": {
-    "employerName": {
+    "employer_name": {
       "type": "string",
       "inferenceType": "explicit",
-      "instruction": "The legal name of the employer / group sponsor this census belongs to."
+      "instruction": "Legal name of the employer / group sponsor this census belongs to."
     },
-    "groupNumber": {
+    "group_number": {
       "type": "string",
       "inferenceType": "explicit",
-      "instruction": "The group number or policy identifier printed on the census. This is the primary correlation field. If absent, leave empty -- do not infer it from the employer name."
+      "instruction": "The group number or policy identifier printed on the census. This is the primary correlation field. Leave empty if absent; do not infer it from the employer name."
     },
-    "planEffectiveDate": {
+    "plan_effective_date": {
       "type": "string",
       "inferenceType": "explicit",
       "instruction": "The plan or renewal effective date, in ISO 8601 (YYYY-MM-DD) if determinable."
     },
-    "employeeCount": {
+    "employee_count": {
       "type": "number",
       "inferenceType": "inferred",
       "instruction": "The total number of enrolled employees represented on this census."
     },
     "employees": {
       "type": "array",
-      "inferenceType": "explicit",
       "instruction": "One entry per enrolled employee row on the census.",
       "items": { "$ref": "#/definitions/EmployeeRow" }
     }

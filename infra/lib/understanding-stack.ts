@@ -81,6 +81,20 @@ export class UnderstandingStack extends cdk.Stack {
       customOutputConfiguration: {
         blueprints: [{ blueprintArn: censusBlueprint.attrBlueprintArn }],
       },
+      // REQUIRED by the CreateDataAutomationProject API even though the L1 marks
+      // it optional -- verified via the CLI (create-data-automation-project
+      // rejects a project with no standardOutputConfiguration). Omitting it would
+      // have been a second rollback after the blueprint one. Minimal document
+      // extraction; the custom blueprint above drives the actual field pull.
+      standardOutputConfiguration: {
+        document: {
+          extraction: {
+            granularity: { types: ['DOCUMENT'] },
+            boundingBox: { state: 'DISABLED' },
+          },
+          generativeField: { state: 'DISABLED' },
+        },
+      },
     });
 
     // --- Submit Lambda -------------------------------------------------------
