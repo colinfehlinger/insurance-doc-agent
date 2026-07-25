@@ -277,3 +277,86 @@ successfully with both blocks present.
 
 All throwaway `ida-test-*` blueprints and projects created during this
 iteration were deleted afterward.
+
+### 3. Completion-event shape — confirmed (was defensively coded)
+
+The first successful run resolved the last two guessed contracts. The mapper had
+called `GetDataAutomationStatus(invocationArn=job_id)` to fetch the output
+location — but `detail.job_id` is a **bare UUID**, and that API requires a full
+invocation ARN, so it raised `ValidationException`. The call is **removed
+entirely**: the event already carries the output location it was fetching.
+
+Real `Bedrock Data Automation Job Succeeded` event:
+
+```json
+{
+  "detail-type": "Bedrock Data Automation Job Succeeded",
+  "source": "aws.bedrock",
+  "detail": {
+    "job_id": "5677eeee-ff37-4344-b7ea-aaab6b962224",
+    "job_status": "SUCCESS",
+    "semantic_modality": "Document",
+    "input_s3_object":   { "s3_bucket": "…", "name": "matters/MTR-2026-0142/census.pdf" },
+    "output_s3_location":{ "s3_bucket": "…", "name": "bda-output/matters/MTR-2026-0142/census.pdf//<job_id>/0" },
+    "job_completion_time": "…", "job_duration_in_seconds": 15
+  }
+}
+```
+
+- **Correlation** keys off `detail.input_s3_object.name` → `resolve_matter()`
+  (ADR-005). `matters/<id>/…` → the matter; `unassociated/…` → NEEDS_TRIAGE.
+- **Output** is `detail.output_s3_location.{s3_bucket,name}`. No status call, and
+  `bedrock:GetDataAutomationStatus` is dropped from the mapper role.
+- `Job Failed With Client/Service Error` did **not** fire on this run, so those
+  detail shapes are still unconfirmed — kept defensive and log-only.
+
+### 4. Custom-output manifest shape — confirmed
+
+Under `output_s3_location.name` the layout is:
+
+```
+<name>/custom_output/<n>/result.json     <- the blueprint extraction (below)
+<name>/standard_output/<n>/result.json   <- standard doc extraction (unused)
+<parent>/job_metadata.json               <- segment paths + custom_output_status
+```
+
+`custom_output/<n>/result.json` top-level keys: `matched_blueprint`,
+`document_class`, `split_document`, **`inference_result`**,
+**`explainability_info`**.
+
+```jsonc
+"inference_result": {
+  "employer_name": "Northwind Manufacturing Group",
+  "group_number": "GRP-88213",
+  "plan_effective_date": "2026-09-01",
+  "employee_count": 3,
+  "employees": [ { "employee_name": "Alice Reyes", "coverage_tier": "Employee Only" }, … ]
+},
+"explainability_info": [            // a LIST; element 0 is a dict keyed by field
+  {
+    "employer_name": { "confidence": 0.256, "value": "…", "success": true, "geometry": […] },
+    "group_number":  { "confidence": 0.906, "value": "GRP-88213", … },
+    "employee_count":{ "confidence": 0.609, "value": 3, … },
+    "employees": [   // nested rows: list of dicts, each sub-field has its own confidence
+      { "employee_name": { "confidence": … }, "coverage_tier": { "confidence": 0.890, … } }, …
+    ]
+  }
+]
+```
+
+`min_confidence` is the minimum over **every** leaf confidence, scalars and
+nested employee rows alike — the conservative ADR-002 gate: one weak field routes
+the whole document to human review.
+
+### ⚠️ First-run confidence reality — everything routes to `in-review`
+
+On the synthetic PDFs, `employer_name` extracts at very low confidence
+(0.098–0.414 min across the four documents), so **min-over-all falls well below
+the 0.8 threshold and every census routes to `in-review`, not `received`.** The
+extraction itself is correct — group numbers came through
+(`GRP-88213`, `GRP-90455`, empty for the deliberately-ambiguous MTR-2026-0163,
+`GRP-70011` for the orphan). This is the confidence gate working as designed, on
+minimal hand-built PDFs that BDA is understandably unsure about. Real documents
+would score higher and some would land in `received`. The threshold, and whether
+to gate on all fields vs. only the identity fields, is an ADR-002 tuning knob —
+not changed here; recorded so the `in-review` outcome is expected, not a bug.

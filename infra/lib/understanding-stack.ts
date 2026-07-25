@@ -168,15 +168,14 @@ export class UnderstandingStack extends cdk.Stack {
       },
     });
 
+    // Mapper reads the BDA output (custom_output/result.json) from the raw
+    // bucket and decrypts it with the CMK, then writes matter state. It no longer
+    // calls bedrock:GetDataAutomationStatus -- the completion event carries the
+    // output location directly (confirmed 2026-07-25), so that permission is
+    // dropped. grantRead covers reading the CMK-encrypted output.
     rawBucket.grantRead(mapperFn);
     matterTable.grantReadWriteData(mapperFn);
     dataKey.grantEncryptDecrypt(mapperFn);
-    mapperFn.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['bedrock:GetDataAutomationStatus'],
-        resources: ['*'], // status is queried by invocation ARN, not resource-scoped
-      }),
-    );
     mapperFn.addToRolePolicy(
       new iam.PolicyStatement({ actions: ['cloudwatch:PutMetricData'], resources: ['*'] }),
     );
