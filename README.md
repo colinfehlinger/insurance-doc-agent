@@ -28,30 +28,54 @@ See [docs/architecture.md](docs/architecture.md) for the full picture.
 
 ## Status
 
-**Steps 1–3 complete.** The pipeline skeleton is deployed to dev, and the
-AgentCore toolchain is proven end to end — a Runtime deployed with
-`agentcore deploy` and successfully invoked.
+**Steps 1–5 complete. The entire deterministic half of the system works end to
+end on real infrastructure.** A document lands in S3, Bedrock Data Automation
+classifies and extracts it, the result is correlated to its matter, confidence-
+scored, and written to matter state — and where it can't be trusted (low
+confidence) or can't be placed (an unassociated document) it routes to a human
+instead of guessing.
 
 | Stack | Contains | Status |
 |---|---|---|
 | `Ida-Dev-Shared` | KMS CMK, rotation on, alias `alias/ida-dev-data` | Real |
-| `Ida-Dev-State` | DynamoDB `ida-dev-matters`, PK `matterId`, on-demand, CMK, PITR | Real |
-| `Ida-Dev-Ingestion` | S3 raw bucket — CMK, versioned, TLS-only, all public access blocked | Real |
-| `Ida-Dev-Understanding` | SSM placeholder `/ida/dev/bda/project-arn` | Stub |
-| `Ida-Dev-Agent` | SSM placeholder `/ida/dev/agent/runtime-arn` | Stub |
+| `Ida-Dev-State` | DynamoDB `ida-dev-matters`, single-table `PK`/`SK` + `GSI1`, on-demand, CMK, PITR | Real |
+| `Ida-Dev-Ingestion` | S3 raw bucket — CMK, versioned, TLS-only, public access blocked, EventBridge on | Real |
+| `Ida-Dev-Understanding` | BDA project + census blueprint, submit + mapper Lambdas, 2 EventBridge rules | Real |
+| `Ida-Dev-Agent` | SSM placeholder `/ida/dev/agent/runtime-arn` + messaging config | Stub |
 | `ViewStack` | Defined in [infra/lib/view-stack.ts](infra/lib/view-stack.ts), not instantiated | Later |
 
-All five are `CREATE_COMPLETE` in dev (us-east-1). Deployed with
-`npx cdk deploy --all -c stage=dev`; no bootstrap was needed — the account was
-already at CDK bootstrap v29.
+All five are `CREATE_COMPLETE` in dev (us-east-1).
 
 **Agent runtime probe (Step 3).** A separate stack,
 `AgentCore-IdaAgentProbe-dev`, deployed by `agentcore deploy` rather than by
-`infra/`. Runtime status **READY**, invoked successfully. It shares no resources
-with the `Ida-Dev-*` stacks and does not collide with them or with the unrelated
-legacy workload in the same account. Kept deployed for Step 6 — AgentCore
-Runtime is consumption-billed with **no idle charge**. See
+`infra/`. Runtime status **READY**, invoked successfully. Kept deployed for
+Step 6 — AgentCore Runtime is consumption-billed with **no idle charge**. See
 [agent/runtime/README.md](agent/runtime/README.md).
+
+### Step 5 — the thin slice, proven
+
+Verified in-account, not just from the readout: a synthetic document per matter
+lands under `matters/<id>/…` → an S3 EventBridge event starts a BDA job →
+BDA's completion event drives a mapper that writes matter state.
+
+- **Correlation** (ADR-005): documents matched to matters by S3 key prefix; the
+  one document that didn't match surfaced in a **triage** queue, never
+  auto-assigned.
+- **Extraction + confidence gate** (ADR-002): every census correlated and
+  extracted (group numbers came through correctly), each confidence-scored and
+  routed by the per-field minimum.
+- **Nothing invented**: the required document that was never uploaded stayed
+  `missing` — the thing the agent chases in Step 6.
+
+**Confidence finding.** On the synthetic hand-built PDFs, `employer_name`
+extracts at **0.10–0.42** confidence, below the 0.8 gate, so **every census
+routes to `in-review`, not `received`.** This is the confidence gate working as
+designed on minimal synthetic input — the extraction itself is correct. Threshold
+calibration, and whether to gate on all fields vs. only identity fields, is
+**deferred to the ADR-002 measurement pass with realistic documents**; it is a
+tuning decision, not a fix. See
+[docs/step-5-notes.md](docs/step-5-notes.md) for the full close-out, the
+integration-reality log, and deferred items.
 
 ## Layout
 
@@ -234,9 +258,17 @@ this build.
    > agent needs a container** (custom system dependencies, a non-Python
    > runtime, or anything CodeZip cannot package).
 
-4. IDP Accelerator triage — reuse `@cdklabs/genai-idp` +
-   `@cdklabs/genai-idp-bda-processor` (Pattern 1 = BDA) for ingestion and
-   extraction; the matter-state model and the agent stay hand-built
-5. The thin slice — synthetic document lands in S3 → BDA classifies → matter
-   updates in DynamoDB → agent decides and calls `send_reminder` once → basic
-   readout
+4. ~~IDP Accelerator triage~~ ✅ — decided **not** to adopt
+   `@cdklabs/genai-idp`; call the BDA APIs directly and keep the accelerator as
+   a reference implementation. Five alpha CDK dependencies inside the
+   deterministic pipeline, a 59-Lambda footprint, and a Docker-for-synth
+   requirement were not worth ~200 lines of Lambda. See
+   [ADR-004](docs/decisions/ADR-004-idp-accelerator-adopt-vs-direct.md).
+5. ~~The thin slice~~ ✅ — synthetic document → S3 → BDA classifies and extracts
+   → correlated to its matter (ADR-005) → confidence-scored matter state
+   (ADR-002) → readout, with **triage and the confidence gate both firing**.
+   Verified in-account. Close-out, integration-reality log, and deferred items
+   in [docs/step-5-notes.md](docs/step-5-notes.md).
+6. **The agent acts on this state** — next. AgentCore reasons over a matter and
+   calls `send_reminder` on the still-`missing` document. The runtime probe
+   (Step 3) and the messaging config (recipient/sender) are already in place.
