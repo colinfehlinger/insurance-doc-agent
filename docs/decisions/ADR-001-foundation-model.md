@@ -1,9 +1,9 @@
 # ADR-001 — Foundation model for the Document-Chase Agent
 
-**Status:** Partially decided. Probe model chosen; **production model deferred to Step 5.**
-**Date:** 2026-07-22
+**Status:** Partially decided. Probe model chosen; **eval re-sequenced to the Step-6 tail / Step 7** (updated 2026-07-25 — it needs the real agent + tools to be meaningful).
+**Date:** 2026-07-22 · **Updated:** 2026-07-25 (Step 6 design: build-then-eval sequencing + harness design)
 **Supersedes:** nothing
-**Related:** [ADR-002](ADR-002-bda-vs-textract.md) (the understanding layer picks its own model separately)
+**Related:** [ADR-002](ADR-002-bda-vs-textract.md) (the understanding layer picks its own model separately), [ADR-006](ADR-006-agent-architecture.md) (the agent this model runs in)
 
 ---
 
@@ -106,10 +106,64 @@ holds, **tier**: cheap model for routine decisions, escalate to a stronger model
 when the matter is near a boundary. If the cheap model fails broadly, tiering
 adds complexity for nothing and the answer is simply the stronger model.
 
+## Update (2026-07-25) — eval sequencing and harness design
+
+Two things the Step-6 design settled about *when* and *how* the eval runs.
+
+### Sequencing: build strong, then eval down
+
+The eval was originally sketched as a "Step 5" measurement. That was too early —
+it needs the real agent and its tools to exist, because the metrics are all about
+*tool selection*, which the probe (calculator/fetcher) could not exercise. So:
+
+1. **Build the agent on a strong model first** — the managed Harness default is
+   Claude Sonnet 4.6; use it (or Haiku 4.5) while wiring the tools and prompt.
+   This keeps any tool-calling failure attributable to the wiring, not the model.
+2. **Then run the eval** to find the cheapest model that still holds the bar.
+
+Choosing the cheap model first would conflate "the wiring is wrong" with "the
+model is weak" — the one confound that makes a model comparison worthless. The
+eval is therefore a **Step-6-tail / Step-7 task, explicitly not a prerequisite**
+for the Step-6 thin slice.
+
+### Harness makes the swap a config change
+
+Under the managed Harness (ADR-006), the model is a `CfnHarness` `model`
+property, not code. Swapping candidates is a config change with no rebuild — the
+Harness is designed for exactly this ("swap providers for a price-performance
+test without rebuilding the conversation"). So the eval harness is: hold the
+system prompt and tool set fixed, vary the `model` property across candidates,
+replay the synthetic matter set, score.
+
+### Eval harness design (runs at the Step-6 tail)
+
+- **Inputs** — the synthetic matter set, expanded so every branch is covered:
+  send-reminder (missing, not overdue, under cadence cap), escalate (overdue, or
+  cadence cap reached), do-nothing (not yet due), flag-anomaly (low confidence or
+  document/matter mismatch), and the boundary cases between them. The Step-6
+  seed change (census always overdue + one future-due doc) seeds two of these.
+- **Candidates** — Nova Micro, Nova Lite, Claude Haiku 4.5, Claude Sonnet.
+- **Prompt caching ON for every candidate.** The system prompt is static and
+  long; per-matter state is short. Cached input is discounted ~90%, which
+  disproportionately favours the input-heavy profile and can close much of the
+  inter-tier gap. A cost/decision figure computed *without* caching would
+  overstate the case for the cheap model — so the harness must enable it and
+  report cached-vs-uncached token counts.
+- **Metrics** — correct-tool-selection %; **guardrail adherence (100%, no
+  tolerance — a single breach disqualifies regardless of cost)**;
+  escalation-boundary accuracy (reported separately — the deciding metric);
+  cost/decision (measured with caching, not estimated).
+- **Tiering hypothesis** — if the cheap model matches a frontier model on the
+  easy majority and diverges only at the escalation boundary, tier: cheap for
+  routine, escalate to a stronger model near the boundary. If it fails broadly,
+  tiering buys nothing and the answer is the stronger model.
+
 ## Consequences
 
 - `load_model()` is a single seam (`MODEL_ID` constant), so swapping models is a
-  one-line change. Keep it that way — no model-specific prompt branching.
+  one-line change. Keep it that way — no model-specific prompt branching. (Under
+  the managed Harness this seam becomes the `CfnHarness` `model` property, same
+  principle.)
 - Any prompt tuned against the probe model must be re-validated against the
   production model. Prompt behaviour does not transfer across tiers.
 - Guardrails must not live only in the system prompt. AgentCore Policy enforces

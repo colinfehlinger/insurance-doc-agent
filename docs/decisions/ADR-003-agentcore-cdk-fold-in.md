@@ -1,8 +1,19 @@
 # ADR-003 — Generated `agentcore/cdk/`: fold into `infra/`, or keep separate?
 
-**Status:** **Deferred.** Keeping them separate for now. Revisit on the triggers below.
+**Status:** **RESOLVED by [ADR-006](ADR-006-agent-architecture.md) (2026-07-25) — fold in.** Deferred through Steps 3–5; the "real agent needs `infra/` resources" trigger fired at Step 6.
 **Date:** 2026-07-22
-**Related:** [agent/runtime/README.md](../../agent/runtime/README.md)
+**Related:** [ADR-006](ADR-006-agent-architecture.md), [agent/runtime/README.md](../../agent/runtime/README.md)
+
+---
+
+> **Resolution (ADR-006):** fold in — but **natively**, not by integrating the
+> probe's generated `cdk/`. The decisive change since this ADR: the managed
+> Harness and the whole AgentCore surface (`CfnHarness`, `CfnGateway`,
+> `CfnGatewayTarget`, `CfnPolicy*`, `CfnMemory`) ship as **stable L1 constructs
+> in the already-pinned `aws-cdk-lib` 2.261.0**. The alpha-dependency cost that
+> justified "keep separate" in this ADR no longer exists for the real agent, so
+> the divergence table below is moot — the generated `cdk/` and its alpha deps
+> are **retired**, not folded. See ADR-006 for the full reasoning.
 
 ---
 
