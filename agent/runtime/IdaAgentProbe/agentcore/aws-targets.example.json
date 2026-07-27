@@ -1,8 +1,0 @@
-[
-  {
-    "name": "dev",
-    "description": "insurance-doc-agent dev - us-east-1, matching infra/ stage config",
-    "account": "000000000000",
-    "region": "us-east-1"
-  }
-]
