@@ -232,6 +232,20 @@ export class AgentStack extends cdk.Stack {
       // composition rule in code.)
       allowedTools: ['escalate-to-human___escalate_to_human'],
       maxIterations: 8,
+      // Memory DISABLED, on purpose and for two reasons at once:
+      //  1. The design defers AgentCore Memory to the multi-touch cadence pass --
+      //     durable per-matter state already lives in the matter table, which is
+      //     what the agent reasons over. A single decision needs no session memory.
+      //  2. Leaving `memory` unset makes the managed Harness auto-provision a
+      //     memory resource, and the execution role then needs bedrock-agentcore
+      //     event/memory permissions on it. Without them the agentic loop breaks
+      //     at start-up with AccessDenied on ListEvents -- the model still emits
+      //     the correct tool-use, but the loop never executes the tool (found the
+      //     hard way: the escalate Lambda showed zero invocations). Disabling
+      //     memory removes both the resource and the permission surface.
+      // When Memory is (re)introduced later, it comes back with its own scoped
+      // event/memory grants on the memory ARN.
+      memory: { disabled: {} },
     });
 
     // --- SSM contract + messaging config ------------------------------------
