@@ -40,6 +40,10 @@ agent/**/aws-targets.json
 # descend into an excluded directory, and a file under one cannot be re-included.
 agent/**/.cli/
 
+# Python (scripts/invoke-agent.py and any other operational scripts)
+__pycache__/
+*.pyc
+
 # Editor / OS
 .DS_Store
 Thumbs.db
