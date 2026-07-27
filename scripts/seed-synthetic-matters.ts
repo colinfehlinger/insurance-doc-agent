@@ -28,6 +28,22 @@ const STAGE = 'dev';
 const REGION = 'us-east-1';
 const TABLE = `ida-${STAGE}-matters`;
 
+/**
+ * Due dates are RELATIVE to now, not hardcoded, so the escalate-vs-remind
+ * boundary is a permanent two-sided fixture regardless of when the seed runs
+ * (the Step-5 clock-drift lesson). MTR-2026-0142's census is always overdue
+ * (escalate branch); other documents are future-due (remind / wait branch).
+ */
+function daysFromNow(n: number): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10); // YYYY-MM-DD
+}
+const OVERDUE = daysFromNow(-2);
+const SOON = daysFromNow(3);
+const LATER = daysFromNow(11);
+const LATEST = daysFromNow(14);
+
 // --- Types (the shape the agent reads) -------------------------------------
 
 export interface RequiredDocument {
@@ -85,8 +101,8 @@ const MATTERS: Matter[] = [
     targetCloseDate: '2026-08-01',
     status: 'blocked',
     requiredDocuments: [
-      { docType: 'census', label: 'Current employee census', status: 'missing', dueDate: '2026-07-24' },
-      { docType: 'signed-employer-application', label: 'Signed employer application', status: 'missing', dueDate: '2026-07-28' },
+      { docType: 'census', label: 'Current employee census', status: 'missing', dueDate: OVERDUE },
+      { docType: 'signed-employer-application', label: 'Signed employer application', status: 'missing', dueDate: SOON },
     ],
     actionHistory: [
       {
@@ -118,7 +134,7 @@ const MATTERS: Matter[] = [
     targetCloseDate: '2026-08-15',
     status: 'open',
     requiredDocuments: [
-      { docType: 'census', label: 'Current employee census', status: 'missing', dueDate: '2026-08-05' },
+      { docType: 'census', label: 'Current employee census', status: 'missing', dueDate: LATER },
     ],
     actionHistory: [],
     census: {
@@ -145,7 +161,7 @@ const AMBIGUOUS_MATTER: Matter = {
   targetCloseDate: '2026-08-20',
   status: 'open',
   requiredDocuments: [
-    { docType: 'census', label: 'Current employee census', status: 'missing', dueDate: '2026-08-08' },
+    { docType: 'census', label: 'Current employee census', status: 'missing', dueDate: LATEST },
   ],
   actionHistory: [],
   census: {

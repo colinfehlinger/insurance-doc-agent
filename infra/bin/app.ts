@@ -57,7 +57,7 @@ new AgentStack(app, `${config.stackPrefix}-Agent`, {
   config,
   dataKey: shared.dataKey,
   matterTable: state.matterTable,
-  description: `STUB: Bedrock AgentCore runtime that decides the next action per matter (${config.stackPrefix}).`,
+  description: `Bedrock AgentCore agent: Harness + Gateway + escalate_to_human tool (${config.stackPrefix}).`,
 });
 
 // --- View: deliberately not instantiated yet -------------------------------

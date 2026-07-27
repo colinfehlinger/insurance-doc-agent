@@ -1,12 +1,28 @@
-# Agent Runtime — AgentCore toolchain probe
+# Agent Runtime — AgentCore toolchain probe  ·  ⚠️ RETIRED (Step 6)
 
-Step 3 of the series. Goal is deliberately small: **stand up one minimal
+> **This probe is retired as of Step 6 ([ADR-006](../../docs/decisions/ADR-006-agent-architecture.md)).**
+> It proved the AgentCore `create → deploy → invoke` loop in Step 3, which was
+> its whole job. The real Document-Chase Agent is built natively in `infra/`
+> from the stable AgentCore L1s (`CfnHarness`/`CfnGateway`/…) with no alpha
+> dependency — see `infra/lib/agent-stack.ts` and
+> [docs/step-6-agent-design.md](../../docs/step-6-agent-design.md).
+>
+> This file is **kept as the Step-3 record** — its findings (the container-image
+> ordering gotcha, the CLI-generated-CDK reconciliation, the Nova/Bedrock access
+> resolution) are the durable narrative and also live in the README roadmap,
+> ADR-001, and ADR-003. The running stack (`AgentCore-IdaAgentProbe-dev`) and the
+> CLI-generated project (`IdaAgentProbe/`) are removed; git history retains them.
+
+---
+
+Step 3 of the series. Goal was deliberately small: **stand up one minimal
 AgentCore Runtime and invoke it once**, to prove the loop before any real tools
 exist. No BDA, no DynamoDB, no matter state, none of the five real tools —
 hello/echo level only.
 
-The fixed pipeline (`infra/`) is untouched by this, and
-`infra/lib/agent-stack.ts` remains an SSM placeholder.
+At the time, the fixed pipeline (`infra/`) was untouched by this, and
+`infra/lib/agent-stack.ts` was an SSM placeholder. (As of Step 6 that stub is now
+the real agent stack.)
 
 ## ⚠️ Pinned CLI version — do not float
 
