@@ -1,7 +1,13 @@
 # Step 6 — the agent (the brain): design and decisions
 
 **Design pass only. No code, no deploy.** Forks and recommendations for review.
-**Date:** 2026-07-25
+**Date:** 2026-07-25 · build + first-deploy findings appended 2026-07-26
+
+> **First-deploy findings** — see the section at the end of this doc. The build
+> is done and synth-clean; the first `Ida-Dev-Agent` deploy attempt surfaced
+> AgentCore resource **naming constraints** (now confirmed against the service
+> model and fixed before redeploy). The two contracts confirmed pre-deploy
+> (tool-type enum, IAM actions) held.
 
 This is where `IdaAgentProbe` (Step 3 hello-world) becomes the real
 Document-Chase Agent. The deterministic body (Steps 1–5) already produces the
@@ -258,3 +264,62 @@ of the boundary.
 **Thin-slice discipline check:** one new tool, one new SNS topic, one Harness,
 one Gateway, one manual invoke. No Policy, no Memory, no sweep, no multi-tool
 wiring. Everything else is named and deferred.
+
+---
+
+## First-deploy findings (2026-07-26)
+
+The first `Ida-Dev-Agent` deploy failed at **early validation with no resources
+created** (clean fail — the account's v30 bootstrap upgrade had cleared the
+earlier version block). Every failure was an **AgentCore resource naming
+constraint**, not a logic error. Confirmed against the bundled
+`bedrock-agentcore-control` service model (`service-2.json`, authoritative — the
+same min/max/pattern the API enforces) and fixed before redeploy, so the whole
+class is closed in one pass rather than one rollback at a time.
+
+### The constraints, from the service model
+
+| Field | Pattern / limit | Underscores? | Hyphens? |
+|---|---|---|---|
+| `GatewayName` | `([0-9a-zA-Z][-]?){1,100}` | ❌ no | ✅ yes |
+| `TargetName` | `([0-9a-zA-Z][-]?){1,100}` | ❌ no | ✅ yes |
+| `GatewayDescription` / `TargetDescription` | `min 1, max 200` | — | — |
+| `HarnessName` | `[a-zA-Z][a-zA-Z0-9_]{0,39}` | ✅ yes | ❌ no |
+| `ToolDefinition.name` (agent-visible tool) | `String`, unconstrained | ✅ yes | ✅ yes |
+
+### The trap: Gateway/Target and Harness have OPPOSITE rules
+
+The gateway family (`GatewayName`, `TargetName`) **forbids underscores, allows
+hyphens**. The harness (`HarnessName`, and by extension harness-side tool config
+names) **forbids hyphens, allows underscores**. So they need *different* naming
+conventions, not a shared one — a single project-wide convention would violate
+one of them. Fixes applied:
+
+- `TargetName` `escalate_to_human` → **`escalate-to-human`** (hyphens)
+- `TargetDescription` 224 → **≤200 chars** (trimmed)
+- `HarnessName` `ida-dev-doc-chase-agent` → **`ida_dev_doc_chase_agent`** (underscores, 23 chars)
+- HarnessTool config `name` `gateway-tools` → **`gateway_tools`** (proactive — same harness no-hyphen rule; not flagged by the failed deploy but the same class)
+
+### The name the agent invokes is unchanged
+
+Only *resource* names changed. The tool the agent actually calls is the
+`ToolDefinition.name` — unconstrained, so it stays **`escalate_to_human`**, and
+the Harness `allowedTools: ['escalate_to_human']` matches it. Verified in the
+synthesized template: the agent-visible tool name is `escalate_to_human`.
+
+### Method note
+
+Rather than fix the three the deploy reported and risk a fourth, every AgentCore
+`name`/`description` in the stack was validated against the service-model
+patterns programmatically at synth time. All pass. This is the same
+"confirm the contract against the authoritative source, not the rollback"
+discipline used for the Step-5 BDA blueprint schema and the tool-type enum —
+applied to a whole constraint class at once.
+
+### Still an honest post-deploy unknown
+
+How the Gateway namespaces the tool name it exposes to the agent (bare
+`escalate_to_human`, or a `<target>___<tool>` composite). If it composes,
+`allowedTools` may need the composite form. `allowedTools` is optional, so the
+fallback is to drop it (the gateway has one tool anyway). Confirmed on the first
+successful invoke, not guessed now.

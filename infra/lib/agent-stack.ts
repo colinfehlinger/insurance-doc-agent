@@ -98,11 +98,17 @@ export class AgentStack extends cdk.Stack {
     });
 
     // --- Gateway target: escalate_to_human, with its typed tool schema -------
+    // NOTE the naming split, confirmed against the bedrock-agentcore-control
+    // service model: the TARGET resource `name` must match TargetName
+    // (([0-9a-zA-Z][-]?){1,100} -- hyphens allowed, NO underscores), so it is
+    // hyphenated; the TOOL the agent actually invokes is the ToolDefinition
+    // `name` below (unconstrained String), which stays escalate_to_human and is
+    // what `allowedTools` on the Harness references. Description max is 200.
     new agentcore.CfnGatewayTarget(this, 'EscalateTarget', {
       gatewayIdentifier: gateway.attrGatewayIdentifier,
-      name: 'escalate_to_human',
+      name: 'escalate-to-human',
       description:
-        'Hand a matter to a human for review, with the reason. Use when the correct next action is not automatable -- e.g. a required document is overdue, a matter is internally inconsistent, or you cannot determine the right action.',
+        'Hand a matter to a human for review, with the reason. Use when the correct next action is not automatable: a required document is overdue, the matter is inconsistent, or the right action is unclear.',
       credentialProviderConfigurations: [{ credentialProviderType: 'GATEWAY_IAM_ROLE' }],
       targetConfiguration: {
         mcp: {
@@ -185,7 +191,9 @@ export class AgentStack extends cdk.Stack {
     );
 
     this.harness = new agentcore.CfnHarness(this, 'Harness', {
-      harnessName: `${config.resourcePrefix}-doc-chase-agent`,
+      // HarnessName pattern: [a-zA-Z][a-zA-Z0-9_]{0,39} -- NO hyphens, <=40 chars
+      // (the opposite of the gateway/target rule). Underscores; 23 chars.
+      harnessName: `${config.resourcePrefix.replace(/-/g, '_')}_doc_chase_agent`,
       executionRoleArn: harnessRole.roleArn,
       model: {
         bedrockModelConfig: {
@@ -203,7 +211,9 @@ export class AgentStack extends cdk.Stack {
           // inline_function | agentcore_code_interpreter. (The L1 type def only
           // says `string`; the docs pin it. Lowercase snake_case.)
           type: 'agentcore_gateway',
-          name: 'gateway-tools',
+          // Harness-side name -- harness naming forbids hyphens (opposite of the
+          // gateway target), so underscores. Not the agent-visible tool name.
+          name: 'gateway_tools',
           config: {
             agentCoreGateway: {
               gatewayArn: gateway.attrGatewayArn,
