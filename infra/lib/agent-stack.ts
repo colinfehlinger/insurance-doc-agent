@@ -163,13 +163,19 @@ export class AgentStack extends cdk.Stack {
       description: 'AgentCore Harness execution role -- invokes the model and the gateway.',
     });
     // Model access: build on Claude Sonnet 4.6 (ADR-001 -- build strong, eval
-    // down). Invoke on the model + its cross-region inference profile.
+    // down). Sonnet 4.6 is INFERENCE_PROFILE-only (confirmed against Bedrock:
+    // the bare `anthropic.claude-sonnet-4-6` foundation model has
+    // inferenceTypesSupported=[INFERENCE_PROFILE], and there is NO date suffix
+    // -- unlike 4.5's ...-20250929-v1:0). So the harness model id is the US
+    // cross-region inference profile `us.anthropic.claude-sonnet-4-6`, and IAM
+    // must allow InvokeModel on BOTH the profile ARN and the foundation-model
+    // ARNs it fans out to across US regions.
     harnessRole.addToPolicy(
       new iam.PolicyStatement({
         actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
         resources: [
-          `arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-6-*`,
-          `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/*anthropic.claude-sonnet-4-6-*`,
+          `arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-6*`,
+          `arn:aws:bedrock:*:${this.account}:inference-profile/us.anthropic.claude-sonnet-4-6`,
         ],
       }),
     );
@@ -197,7 +203,13 @@ export class AgentStack extends cdk.Stack {
       executionRoleArn: harnessRole.roleArn,
       model: {
         bedrockModelConfig: {
-          modelId: 'anthropic.claude-sonnet-4-6-20260514-v1:0',
+          // US cross-region inference profile for Claude Sonnet 4.6 -- CONFIRMED
+          // ACTIVE via list-inference-profiles. Sonnet 4.6 has no date-suffixed
+          // foundation-model id and is invocable only through a profile. (`us.`
+          // keeps inference within US regions, consistent with the project's
+          // data posture; `global.anthropic.claude-sonnet-4-6` is the wider
+          // alternative.)
+          modelId: 'us.anthropic.claude-sonnet-4-6',
           maxTokens: 2048,
           temperature: 0,
         },
