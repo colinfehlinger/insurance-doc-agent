@@ -222,7 +222,15 @@ export class AgentStack extends cdk.Stack {
           },
         },
       ],
-      allowedTools: ['escalate_to_human'],
+      // The Gateway exposes a tool as `{targetName}___{toolName}` -- confirmed
+      // empirically via an MCP tools/list against the live gateway (2026-07-27):
+      // the target `escalate-to-human` + tool `escalate_to_human` surface as
+      // `escalate-to-human___escalate_to_human`. allowedTools filters on that
+      // exposed name, so the bare tool name would match nothing and leave the
+      // agent with no tools. (When the tool set grows, this allowlist becomes a
+      // real guardrail alongside Cedar; for one tool it also documents the
+      // composition rule in code.)
+      allowedTools: ['escalate-to-human___escalate_to_human'],
       maxIterations: 8,
     });
 
