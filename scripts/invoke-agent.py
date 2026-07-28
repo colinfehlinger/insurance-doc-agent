@@ -17,6 +17,7 @@ Usage (from the repo root or anywhere):
 """
 
 import json
+import os
 import sys
 import uuid
 from datetime import date
@@ -72,8 +73,43 @@ def build_prompt(state: dict) -> str:
     )
 
 
+def assert_account() -> str:
+    """Fail LOUD if the shell's credentials resolve to the wrong account.
+
+    This script pins its region (us-east-1) but boto3 resolves the ACCOUNT from
+    ambient credentials. A stray AWS_PROFILE / AWS_ACCESS_KEY_ID export silently
+    sent earlier runs to a different account, where the whole invoke->tool->row
+    flow happened -- while the operator's CLI checks looked at the real account
+    and (correctly) saw nothing. That is how a confirmation script produced
+    hollow "EXECUTION CONFIRMED" reads against the wrong table.
+
+    The account id is not hard-coded (repo rule: no account id in the tree); it
+    comes from EXPECTED_ACCOUNT, the same guard pattern as decom-A.sh. Unset ->
+    hard failure, so the script can never silently run wherever the ambient
+    credentials happen to point.
+    """
+    expected = os.environ.get("EXPECTED_ACCOUNT")
+    if not expected:
+        sys.exit(
+            "Set EXPECTED_ACCOUNT to the 12-digit account the agent lives in, e.g.\n"
+            "  EXPECTED_ACCOUNT=<id> python scripts/invoke-agent.py MTR-2026-0142"
+        )
+    actual = boto3.client("sts", region_name=REGION).get_caller_identity()["Account"]
+    if actual != expected:
+        sys.exit(
+            f"WRONG ACCOUNT: credentials resolve to {actual}, expected {expected}.\n"
+            "A stray AWS_PROFILE / AWS_ACCESS_KEY_ID export is likely redirecting boto3.\n"
+            "  unset AWS_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN\n"
+            "then re-check with:  aws sts get-caller-identity"
+        )
+    print(f"account: {actual} (matches EXPECTED_ACCOUNT) | region: {REGION}")
+    return actual
+
+
 def main() -> None:
     matter_id = sys.argv[1] if len(sys.argv) > 1 else "MTR-2026-0142"
+
+    assert_account()  # refuse to run against the wrong account (loud, before anything)
 
     cf = boto3.client("cloudformation", region_name=REGION)
     outputs = {
