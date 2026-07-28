@@ -323,3 +323,72 @@ How the Gateway namespaces the tool name it exposes to the agent (bare
 `allowedTools` may need the composite form. `allowedTools` is optional, so the
 fallback is to drop it (the gateway has one tool anyway). Confirmed on the first
 successful invoke, not guessed now.
+
+---
+
+## First-run findings (2026-07-27) — getting the agent to actually act
+
+The build synthesized clean and deployed, but the agent did not act until four
+distinct problems were peeled back, each hidden behind the previous one. The
+decision leg (correct reasoning) worked from the start; the **execution leg** did
+not. Verifying against the **DynamoDB row** — not the invoke's output — is what
+exposed each one. These are the reusable lessons.
+
+### The headline lesson: the managed Harness has an implicit base-permission contract
+
+**Symptom (the "silent empty-toolConfig" failure):** the agent reasons correctly,
+returns `stopReason: end_turn` with **no tool call**, the tool Lambda has **zero
+invocations**, and nothing errors. It looks like the model "chose" not to act.
+
+**Cause:** the managed Harness authenticates to the Gateway — to *discover and
+call* its tools — using a **Workload Identity token** (`bedrock-agentcore:GetWorkloadAccessToken`).
+The Harness execution role, hand-built in CDK, was missing that permission (and
+the rest of the base contract: X-Ray, logs, metrics, ECR-public). With no
+workload token, tool discovery **fails silently**, the Harness builds the
+ConverseStream request with an **empty `toolConfig`**, and the model has no tool
+to call. Everything downstream is a consequence.
+
+**Why it bites CDK specifically:** the AgentCore **CLI auto-provisions** this base
+role; a **self-built role does not get it**. The AWS docs say so explicitly
+(harness-security.html: *"The AgentCore CLI creates a role with these permissions
+automatically… The policy above is for cases where you create the role
+yourself."*). This is the exact seam a "build it natively in CDK" decision
+(ADR-006) lands on, and it is invisible until you notice the tool never runs.
+
+**The base contract (least-privilege scoped in `agent-stack.ts`):**
+`GetWorkloadAccessToken`/`…ForJWT` on the workload-identity resources (the tool
+fix), `xray:PutTraceSegments…` (the missing-trace fix), `logs:*` on
+`/aws/bedrock-agentcore/runtimes/*`, `cloudwatch:PutMetricData` in the
+`bedrock-agentcore` namespace, and `ecr-public:GetAuthorizationToken` +
+`sts:GetServiceBearerToken`.
+
+**Layer confirmed before fixing (ADR-006 held):** the AWS "Connect to tools" doc
+states the managed Harness *auto-injects* gateway tools (*"Reference a gateway
+ARN and every tool configured on that gateway becomes available"*). So this was a
+config/permission bug, **not** an architecture where the client must supply
+tools — the client stays thin, the managed orchestration stays intact.
+
+### The other three, and the meta-lesson
+
+1. **Auto-provisioned memory needed permissions too.** Leaving the harness
+   `memory` unset made it auto-create a session-memory resource whose events the
+   role couldn't read (`ListEvents` AccessDenied), breaking the loop at start-up.
+   Fixed by `memory: { disabled: {} }` — which also honored the design's
+   defer-Memory decision.
+2. **A fabricated model id.** `anthropic.claude-sonnet-4-6-20260514-v1:0` was
+   guessed and invalid; Sonnet 4.6 has no date suffix and is inference-profile-
+   only (`us.anthropic.claude-sonnet-4-6`). Should have been confirmed against
+   Bedrock, as the Step-3 probe model was.
+3. **AgentCore resource naming constraints** (GatewayTarget forbids underscores,
+   Harness forbids hyphens, description ≤200) — caught pre-deploy against the
+   service model.
+
+**The meta-lesson — metrics lie, rows don't.** Multiple times an invoke printed
+`TOOL CALLED` (an *emitted* tool-use block) and a CloudWatch datapoint appeared,
+while the DynamoDB row — the thing the tool actually writes — was absent. The
+Lambda **log stream** (created synchronously on first execution, lag-free) and
+the **matter row** were the only reliable artifacts. A verification bar of
+"the row exists AND the email arrived," never "toolConfig is present now" or
+"should work," is what kept four hollow passes from being recorded as a milestone.
+`scripts/invoke-agent.py` now queries the row after invoking, so its own output
+can't repeat the false pass.

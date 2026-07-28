@@ -158,9 +158,14 @@ export class AgentStack extends cdk.Stack {
       'utf-8',
     );
 
+    // Harness name is reused below for the workload-identity resource ARN, so
+    // it is a const rather than inline. Harness naming forbids hyphens (<=40
+    // chars), hence the underscore transform.
+    const harnessName = `${config.resourcePrefix.replace(/-/g, '_')}_doc_chase_agent`;
+
     const harnessRole = new iam.Role(this, 'HarnessRole', {
       assumedBy: new iam.ServicePrincipal('bedrock-agentcore.amazonaws.com'),
-      description: 'AgentCore Harness execution role -- invokes the model and the gateway.',
+      description: 'AgentCore Harness execution role -- invokes the model, the gateway, and the base AgentCore primitives.',
     });
     // Model access: build on Claude Sonnet 4.6 (ADR-001 -- build strong, eval
     // down). Sonnet 4.6 is INFERENCE_PROFILE-only (confirmed against Bedrock:
@@ -179,16 +184,13 @@ export class AgentStack extends cdk.Stack {
         ],
       }),
     );
-    // Call the gateway at runtime. CONFIRMED action: the AgentCore IAM docs name
-    // bedrock-agentcore:InvokeGateway as the runtime gateway-invocation action,
-    // authorized on the Gateway ARN. Scoped to it rather than a wildcard.
-    //   Residual (post-deploy) unknown: whether the managed Harness invokes the
-    //   gateway via THIS execution role (needs the grant below) or brokers it
-    //   service-side (grant harmless-but-unused). Either way InvokeGateway is
-    //   the correct action, so this is proper scoping, not a guess. Cedar Policy
-    //   actions (AuthorizeAction/PartiallyAuthorizeActions/GetPolicyEngine) are
-    //   deliberately NOT here -- they attach to the GATEWAY role only when a
-    //   Policy Engine exists, which the slice defers (ADR-006 guardrail split).
+    // Call the gateway at runtime. bedrock-agentcore:InvokeGateway is the runtime
+    // gateway-invocation action, authorized on the Gateway ARN. Confirmed the
+    // managed Harness DOES use this execution role (not a service-side broker):
+    // without the base permissions below the harness could not obtain a workload
+    // token to reach the gateway, and tool discovery failed silently. Cedar Policy
+    // actions belong on the GATEWAY role only when a Policy Engine exists, which
+    // the slice defers (ADR-006 guardrail split).
     harnessRole.addToPolicy(
       new iam.PolicyStatement({
         actions: ['bedrock-agentcore:InvokeGateway'],
@@ -196,10 +198,84 @@ export class AgentStack extends cdk.Stack {
       }),
     );
 
+    // --- BASE AgentCore Harness execution-role contract ---------------------
+    // The managed Harness has an IMPLICIT base-permission contract the AgentCore
+    // CLI auto-provisions but CDK does NOT. A self-built role must carry it, or
+    // the harness fails SILENTLY: without the workload-identity token it cannot
+    // authenticate to the Gateway to discover tools, so it builds the model
+    // request with an EMPTY toolConfig -- the model reasons correctly but has no
+    // tool to call (stopReason=end_turn, no tool, no side effect). This was the
+    // Step-6 "silent empty-toolConfig" failure. Source:
+    // docs.aws.amazon.com/bedrock-agentcore/latest/devguide/harness-security.html
+    // (sample execution-role policy). Least-privilege scoped below.
+
+    // Workload Identity -- the token the harness uses to reach the gateway (and
+    // any AgentCore primitive). THE fix for tool discovery. Resources confirmed
+    // to exist (auto-created by the harness deploy): workload-identity-directory
+    // /default and .../workload-identity/harness_<name>-<hash>.
+    harnessRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: [
+          'bedrock-agentcore:GetWorkloadAccessToken',
+          'bedrock-agentcore:GetWorkloadAccessTokenForJWT',
+        ],
+        resources: [
+          `arn:aws:bedrock-agentcore:${this.region}:${this.account}:workload-identity-directory/default`,
+          `arn:aws:bedrock-agentcore:${this.region}:${this.account}:workload-identity-directory/default/workload-identity/harness_${harnessName}-*`,
+        ],
+      }),
+    );
+
+    // X-Ray -- without this the harness emits no traces (this is why the Step-6
+    // Observability audit-trail leg was empty). Sampling reads are account-wide.
+    harnessRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: [
+          'xray:PutTraceSegments',
+          'xray:PutTelemetryRecords',
+          'xray:GetSamplingRules',
+          'xray:GetSamplingTargets',
+        ],
+        resources: ['*'],
+      }),
+    );
+
+    // CloudWatch Logs -- the harness runtime writes under /aws/bedrock-agentcore/runtimes/*.
+    harnessRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['logs:CreateLogGroup', 'logs:CreateLogStream', 'logs:PutLogEvents', 'logs:DescribeLogStreams'],
+        resources: [`arn:aws:logs:${this.region}:${this.account}:log-group:/aws/bedrock-agentcore/runtimes/*`],
+      }),
+    );
+    harnessRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['logs:DescribeLogGroups'],
+        resources: [`arn:aws:logs:${this.region}:${this.account}:log-group:*`],
+      }),
+    );
+
+    // CloudWatch metrics -- scoped to the bedrock-agentcore namespace.
+    harnessRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['cloudwatch:PutMetricData'],
+        resources: ['*'],
+        conditions: { StringEquals: { 'cloudwatch:namespace': 'bedrock-agentcore' } },
+      }),
+    );
+
+    // ECR Public -- the harness pulls its application container from ECR Public
+    // at the start of each session; both actions require Resource "*".
+    harnessRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ['ecr-public:GetAuthorizationToken', 'sts:GetServiceBearerToken'],
+        resources: ['*'],
+      }),
+    );
+
     this.harness = new agentcore.CfnHarness(this, 'Harness', {
       // HarnessName pattern: [a-zA-Z][a-zA-Z0-9_]{0,39} -- NO hyphens, <=40 chars
       // (the opposite of the gateway/target rule). Underscores; 23 chars.
-      harnessName: `${config.resourcePrefix.replace(/-/g, '_')}_doc_chase_agent`,
+      harnessName,
       executionRoleArn: harnessRole.roleArn,
       model: {
         bedrockModelConfig: {

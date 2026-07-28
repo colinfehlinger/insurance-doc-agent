@@ -133,3 +133,24 @@ alpha L2 (`@aws/agentcore-cdk`) **for the Harness construct only**, still inside
 `infra/`, rather than reviving the separate sub-project. The resource-sharing
 argument for fold-in stands regardless of which construct layer builds the
 Harness.
+
+## Note (2026-07-27) — the implicit base-permission contract (fold-in seam)
+
+Fold-in held, but it surfaced a seam worth recording. The managed Harness has an
+**implicit base execution-role contract** the AgentCore CLI auto-provisions and
+CDK does not: `bedrock-agentcore:GetWorkloadAccessToken`/`…ForJWT` (the workload
+token the Harness uses to authenticate to the Gateway for **tool discovery**),
+plus `xray:*` (traces), `logs:*`, `cloudwatch:PutMetricData`, and ECR-public
+pull. A hand-built role missing these does not error — the Harness builds the
+model request with an **empty `toolConfig`** and the agent reasons but never
+calls a tool (the "silent empty-toolConfig" failure; full write-up in
+`docs/step-6-agent-design.md`).
+
+This does **not** reverse ADR-006 — the AWS docs confirm the managed Harness
+auto-injects gateway tools, so the client stays thin and the managed
+orchestration is intact; it was an auth gap, not an architecture problem. The
+takeaway for the fold-in: **building AgentCore resources natively in CDK means
+owning the base-permission contract the CLI would have hidden.** When more tools
+or primitives (Memory, Browser, Code Interpreter) are added, their base grants
+must be added to the execution role explicitly — the CLI's convenience is exactly
+what CDK trades away for typed, in-`infra/` control.

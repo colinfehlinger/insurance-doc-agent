@@ -24,6 +24,12 @@ from datetime import date
 import boto3
 from boto3.dynamodb.conditions import Key
 
+# Force UTF-8 stdout. The agent's reasoning contains characters like the arrow
+# (escalate -> not remind) that crash on Windows' default cp1252 console mid-run,
+# which previously aborted the script before it could report the outcome.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 REGION = "us-east-1"
 STACK = "Ida-Dev-Agent"
 TABLE = "ida-dev-matters"
@@ -122,12 +128,31 @@ def main() -> None:
     print()
     if tool_name:
         args = "".join(tool_input_parts)
-        print(f">>> TOOL CALLED: {tool_name}")
+        print(f">>> agent EMITTED a tool call: {tool_name}")
         print(f"    args: {args}")
     else:
-        print(">>> NO TOOL CALLED (stop reason: %s)" % stop_reason)
-        print("    For MTR-2026-0142 (overdue in-review census), the slice EXPECTS")
-        print("    escalate_to_human. No tool call = the slice has correctly failed.")
+        print(">>> agent emitted NO tool call (stop reason: %s)" % stop_reason)
+
+    # Emitting a tool-use block is NOT the same as the tool executing. The earlier
+    # hollow "passes" came from trusting the emitted block. So verify EXECUTION in
+    # the account: does the escalation row exist on the matter? That -- plus the
+    # email in the inbox -- is the real bar, per the Step-6 DoD.
+    print("\n--- verifying EXECUTION in DynamoDB (not just the emitted block) ---")
+    table = boto3.resource("dynamodb", region_name=REGION).Table(TABLE)
+    rows = table.query(
+        KeyConditionExpression=Key("PK").eq(f"MATTER#{matter_id}")
+        & Key("SK").begins_with("ACTION#escalate")
+    )["Items"]
+    if rows:
+        for r in rows:
+            print(f"    [OK] {r['SK']}: status={r.get('status')} "
+                  f"notified={r.get('notified')} at={r.get('escalatedAt')}")
+            print(f"         reason: {r.get('reason')}")
+        print(">>> EXECUTION CONFIRMED: the tool ran and wrote matter state.")
+    else:
+        print("    [ABSENT] no ACTION#escalate row on this matter.")
+        print(">>> NOT EXECUTED: the agent may have reasoned/emitted a call, but the")
+        print("    tool did not run. The slice has NOT met its bar (row + email).")
 
 
 if __name__ == "__main__":
