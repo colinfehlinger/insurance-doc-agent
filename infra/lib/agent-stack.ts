@@ -4,6 +4,7 @@ import * as cdk from 'aws-cdk-lib';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
@@ -54,6 +55,18 @@ export class AgentStack extends cdk.Stack {
     );
 
     // --- The one tool: escalate_to_human Lambda -----------------------------
+    // Own the log group explicitly. With `useCdkManagedLogGroup` on, a Function
+    // otherwise gets a CDK-managed log group that defaults to RETAIN -- so on a
+    // stack destroy/rollback the group `/aws/lambda/<fn>` is orphaned, and the
+    // next deploy's create collides with the survivor ("already exists"). Making
+    // CDK the single, DESTROY-on-delete owner (named to the conventional path so
+    // the Lambda uses it rather than auto-creating a duplicate) ends that cycle.
+    // This is the deferred Step-5 log-group bug.
+    const escalateLogGroup = new logs.LogGroup(this, 'EscalateFnLogGroup', {
+      logGroupName: `/aws/lambda/${config.resourcePrefix}-tool-escalate`,
+      retention: logs.RetentionDays.TWO_WEEKS,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
     const escalateFn = new lambda.Function(this, 'EscalateFn', {
       functionName: `${config.resourcePrefix}-tool-escalate`,
       runtime: lambda.Runtime.PYTHON_3_13,
@@ -61,6 +74,7 @@ export class AgentStack extends cdk.Stack {
       code: lambda.Code.fromAsset(path.join(__dirname, '..', 'lambdas', 'tools', 'escalate')),
       timeout: cdk.Duration.seconds(30),
       memorySize: 256,
+      logGroup: escalateLogGroup,
       environment: {
         MATTER_TABLE: matterTable.tableName,
         ESCALATION_TOPIC_ARN: this.escalationTopic.topicArn,

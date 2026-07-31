@@ -7,6 +7,7 @@ import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
@@ -98,6 +99,15 @@ export class UnderstandingStack extends cdk.Stack {
     });
 
     // --- Submit Lambda -------------------------------------------------------
+    // Own the log group explicitly (DESTROY), so it isn't orphaned on destroy and
+    // collided-with on the next deploy. See the note on the escalate tool's log
+    // group in agent-stack.ts -- same `useCdkManagedLogGroup` RETAIN default,
+    // same deferred Step-5 bug.
+    const submitLogGroup = new logs.LogGroup(this, 'SubmitFnLogGroup', {
+      logGroupName: `/aws/lambda/${config.resourcePrefix}-bda-submit`,
+      retention: logs.RetentionDays.TWO_WEEKS,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
     const submitFn = new lambda.Function(this, 'SubmitFn', {
       functionName: `${config.resourcePrefix}-bda-submit`,
       runtime: lambda.Runtime.PYTHON_3_13,
@@ -107,6 +117,7 @@ export class UnderstandingStack extends cdk.Stack {
       code: lambda.Code.fromAsset(path.join(__dirname, '..', 'lambdas', 'submit')),
       timeout: cdk.Duration.seconds(60),
       memorySize: 256,
+      logGroup: submitLogGroup,
       environment: {
         BDA_PROJECT_ARN: this.bdaProject.attrProjectArn,
         BDA_PROFILE_ARN: bdaProfileArn,
@@ -153,6 +164,11 @@ export class UnderstandingStack extends cdk.Stack {
     );
 
     // --- Mapper Lambda -------------------------------------------------------
+    const mapperLogGroup = new logs.LogGroup(this, 'MapperFnLogGroup', {
+      logGroupName: `/aws/lambda/${config.resourcePrefix}-bda-mapper`,
+      retention: logs.RetentionDays.TWO_WEEKS,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
     const mapperFn = new lambda.Function(this, 'MapperFn', {
       functionName: `${config.resourcePrefix}-bda-mapper`,
       runtime: lambda.Runtime.PYTHON_3_13,
@@ -160,6 +176,7 @@ export class UnderstandingStack extends cdk.Stack {
       code: lambda.Code.fromAsset(path.join(__dirname, '..', 'lambdas', 'mapper')),
       timeout: cdk.Duration.seconds(60),
       memorySize: 256,
+      logGroup: mapperLogGroup,
       environment: {
         MATTER_TABLE: matterTable.tableName,
         CONFIDENCE_THRESHOLD: String(config.extractionConfidenceThreshold),
