@@ -82,19 +82,29 @@ the runtime image.
 
 ## Decision
 
-**Path 2 — client-side agent loop.** Keep the Gateway, the `escalate_to_human`
-tool Lambda, the SNS topic, and even the Harness resource (cheap, and re-usable
-if AWS fixes the runtime), but move the **orchestration** out of the managed
-Harness:
+**Path 2 — client-side agent loop; retire the Harness, keep the Gateway.**
+Retire the managed Harness and its execution role (the piece that proved
+defective — it injects no tools). Keep the Gateway, its target, the
+`escalate_to_human` tool Lambda, and the SNS topic — the governed tool surface
+still does the acting. Move only the **orchestration** to the client:
 
-- Our code calls Bedrock **Converse** directly with `us.anthropic.claude-sonnet-4-6`,
-  the version-controlled system prompt, the matter state, and a `toolConfig`
-  built from the `escalate_to_human` schema — the path proven to work.
-- On `stopReason: tool_use`, our code dispatches the call to the tool and returns
-  the `toolResult` for the agent's closing summary.
+- `scripts/agent-loop.py` calls Bedrock **Converse** directly with
+  `us.anthropic.claude-sonnet-4-6`, the version-controlled system prompt, the
+  matter state, and a `toolConfig` it builds from the `escalate_to_human` schema,
+  `toolChoice: auto` — the path proven to emit a real `tool_use`.
+- On `stopReason: tool_use`, the loop **dispatches through the Gateway**
+  (SigV4 / MCP `tools/call`) to the escalate Lambda — so the Gateway keeps doing
+  real work (per-call audit, credential isolation, the future Cedar enforcement
+  point) rather than becoming vestigial. The Lambda writes the row and sends the
+  email; the loop writes a coherent `AUDIT#` decision record.
 - **Definition of Done is unchanged:** a real `ACTION#escalate#census` row
   (this account's schema — `action`/`actor`/`reason`/`docType`/`escalatedAt`),
-  the SNS email, and a trace. Only the orchestration *location* moves.
+  the SNS email, the `AUDIT#` record, and `toolConfig` populated in the loop's
+  request. Only the orchestration *location* moves.
+
+`decide_and_act(matter_id, clients)` is the port-clean core (no argv/print/exit,
+clients injected, config from env), so the production trigger — a Lambda on a
+state-change or scheduled-sweep EventBridge rule — reuses it without a rewrite.
 
 Path 1 (a timeboxed check for a runtime version/flag/config that makes tools
 reach `toolConfig`) was attempted and exhausted: our config already matches the
@@ -107,15 +117,22 @@ behavior.
   native-L1 build decisions stand; the "managed Harness owns orchestration and
   auto-injects tools" half does not, for this runtime version. The client now
   owns the reasoning loop and the tool dispatch.
-- The Gateway's governance value (agent-holds-no-credentials, per-call audit,
-  Cedar policy) is **not** exercised while the client invokes the tool directly.
-  Restoring the tool call through the Gateway (client → Gateway `tools/call` →
-  Lambda) is the production-aligned follow-up once the loop is green; recorded as
-  a deferred item.
+- The Gateway's governance value (agent-holds-no-credentials, per-call audit, the
+  future Cedar policy point) **is** exercised: the loop dispatches through the
+  Gateway, not straight to the Lambda. The client owns only judgment; the Gateway
+  owns governed execution — which keeps most of ADR-006's intent intact.
+- The **audit trail does not regress**: the loop writes an `AUDIT#<decisionId>`
+  row tying reasoning → decision → outcome, with `promptVersion` (sha of the
+  system prompt — the control environment) and correlation ids (`modelRequestId`
+  into the model-invocation logs; the Gateway's per-call log). The managed
+  Harness's Observability trace was going to be this leg, and it was the very
+  thing that was broken (OTEL export failing), so client-side ownership is a net
+  gain here, not a loss.
 - **Reversal trigger:** if AWS ships a harness runtime that populates `toolConfig`
-  (re-test with the same three-invocation table), the managed Harness can
-  reclaim orchestration and this ADR's client loop becomes removable — the
-  Harness/Gateway resources were deliberately kept to make that cheap.
+  (re-test with the same three-invocation table), orchestration can return to the
+  managed Harness — re-adding the `CfnHarness` + execution role is a few lines
+  (this ADR and git history record exactly what to restore). The Gateway, target,
+  Lambda, and SNS were kept precisely so that reversal only touches the Harness.
 - Bedrock **model-invocation logging** remains enabled in the dev account
   (delivery role `ida-dev-bedrock-invlog-role`, log group
   `/ida/dev/bedrock-model-invocations`) — useful for the ADR-001 model eval;
