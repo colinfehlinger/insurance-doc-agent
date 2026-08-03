@@ -390,5 +390,59 @@ Lambda **log stream** (created synchronously on first execution, lag-free) and
 the **matter row** were the only reliable artifacts. A verification bar of
 "the row exists AND the email arrived," never "toolConfig is present now" or
 "should work," is what kept four hollow passes from being recorded as a milestone.
-`scripts/invoke-agent.py` now queries the row after invoking, so its own output
-can't repeat the false pass.
+The verification path queries the row after invoking, so its own output can't
+repeat the false pass — the discipline carried into `scripts/agent-loop.py`
+(`invoke-agent.py`, which first carried it, was retired with the Harness; ADR-007).
+
+## Ghost-reading reconciliation (2026-07-30) — the reusable lesson
+
+A long tail of "the row is there / no it isn't" readings turned out to have
+**two mundane causes**, and every exotic theory we reached for was disproven by a
+direct check. Recording it because the disproven theories are the seductive ones.
+
+**What actually happened:**
+
+1. **A verification script that fabricated a row-shaped confirmation.** An earlier
+   `invoke-agent.py` built its `>>> EXECUTION CONFIRMED` block out of the agent's
+   **emitted tool-use arguments** (the model's *intent* — `status`, `notified`, an
+   invented `escalationId`), formatted to look like a persisted DynamoDB item. It
+   printed a convincing "row" for a write that never happened. The tell was the
+   **schema**: those fields are not what this account's escalate Lambda writes
+   (`action` / `actor` / `reason` / `docType` / `escalatedAt`, no `escalationId`),
+   so a "row" carrying them could not have come from the table.
+2. **CloudWatch metric lag.** Emitted-tool-use metrics and datapoints appeared
+   while the persisted artifact did not, and lag made the two look inconsistent
+   over minutes.
+
+**What it was NOT** — each theorized, each killed by a direct check:
+
+- **NOT two accounts.** Confirmed against the machine: one credential source,
+  `[default]` → 000000000000; the `legacy-profile` profile's keys are dead
+  (`InvalidClientTokenId`), so nothing could have run there. No stray profile.
+- **NOT a DynamoDB TTL expiring rows.** `describe-time-to-live` → `DISABLED`;
+  the Lambda writes no expiry attribute. Rows were never disappearing.
+- **NOT a read-consistency race.** The reads were already strongly consistent;
+  they returned `Count 0` because the tool had **never executed here** — the
+  escalate Lambda's log group had **zero streams**, the lag-free proof.
+
+**The lesson (reusable):** *confirm a distributed write only by reading the
+persisted artifact with a strongly-consistent read — never by the tool's
+self-report, the emitted tool-use block, or the actor's stated intent.* A
+verification path must not be able to see the actor's output at all; if it can,
+it will eventually echo intent as fact. The client loop's `confirm()` in
+`scripts/agent-loop.py` enforces this structurally: it takes only a `matter_id`,
+does a strongly-consistent read, and counts a row only if it carries this
+account's Lambda schema — there is no code path from the model's output to the
+confirmation. (`invoke-agent.py`, which originally carried `confirm_execution()`,
+was retired with the managed Harness; see ADR-007.)
+
+(The genuine open defect underneath all the noise was never a read problem — the
+model request simply carried no tools. The first theory here — an empty toolConfig
+*cached* at a pre-fix deploy, to be fixed by the workload-identity role grant and
+a clean redeploy — was itself **disproven**: with the role correct and the harness
+freshly created, the request *still* carried no `toolConfig`, for the configured
+gateway tool, an inline tool, and even the built-in tools. The managed Harness
+runtime does not inject tools for this version; resolution was to retire the
+Harness and orchestrate client-side over the Gateway. Full evidence — the
+three-invocation table read from the model-invocation logs — and the decision are
+in ADR-007.)
