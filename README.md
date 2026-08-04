@@ -28,12 +28,15 @@ See [docs/architecture.md](docs/architecture.md) for the full picture.
 
 ## Status
 
-**Steps 1–5 complete. The entire deterministic half of the system works end to
-end on real infrastructure.** A document lands in S3, Bedrock Data Automation
-classifies and extracts it, the result is correlated to its matter, confidence-
-scored, and written to matter state — and where it can't be trusted (low
-confidence) or can't be placed (an unassociated document) it routes to a human
-instead of guessing.
+**Steps 1–6 complete. The system works end to end on real infrastructure — the
+deterministic pipeline and the agent on top of it.** A document lands in S3,
+Bedrock Data Automation classifies and extracts it, the result is correlated to
+its matter, confidence-scored, and written to matter state — and where it can't
+be trusted (low confidence) or can't be placed (an unassociated document) it
+routes to a human instead of guessing. On top of that state the agent reads a
+matter, judges the next action, and — for an overdue, low-confidence matter —
+escalates to a human through the Gateway, writing the audit row and sending the
+email. Verified against the persisted artifacts, not the invoke's word.
 
 | Stack | Contains | Status |
 |---|---|---|
@@ -41,7 +44,7 @@ instead of guessing.
 | `Ida-Dev-State` | DynamoDB `ida-dev-matters`, single-table `PK`/`SK` + `GSI1`, on-demand, CMK, PITR | Real |
 | `Ida-Dev-Ingestion` | S3 raw bucket — CMK, versioned, TLS-only, public access blocked, EventBridge on | Real |
 | `Ida-Dev-Understanding` | BDA project + census blueprint, submit + mapper Lambdas, 2 EventBridge rules | Real |
-| `Ida-Dev-Agent` | SSM placeholder `/ida/dev/agent/runtime-arn` + messaging config | Stub |
+| `Ida-Dev-Agent` | Gateway + `escalate_to_human` target + tool Lambda + SNS + messaging config (managed Harness retired — ADR-007; agent runs client-side in `scripts/agent-loop.py`) | Real |
 | `ViewStack` | Defined in [infra/lib/view-stack.ts](infra/lib/view-stack.ts), not instantiated | Later |
 
 All five are `CREATE_COMPLETE` in dev (us-east-1).
@@ -76,6 +79,97 @@ calibration, and whether to gate on all fields vs. only identity fields, is
 tuning decision, not a fix. See
 [docs/step-5-notes.md](docs/step-5-notes.md) for the full close-out, the
 integration-reality log, and deferred items.
+
+### Step 6 — the agent, proven
+
+The agent reads one matter's state and history and decides the single next
+action — proven on **two matters with two distinct judgments**:
+
+- **`MTR-2026-0142`** — census `in-review`, 9 days overdue at 0.256 confidence;
+  signed employer application missing and overdue; target close date passed. The
+  agent **escalates rather than sending another reminder**, citing all three
+  triggers. A second run, seeing the escalation already in the matter's history,
+  correctly does **nothing**.
+- **`MTR-2026-0157`** — census *received* and `in-review` at 0.41 confidence,
+  **not** overdue. The agent escalates on **data quality alone** and explicitly
+  reasons that this is *not* a reminder case, because the document arrived — the
+  problem is that its extraction can't be trusted, and correcting it silently
+  would destroy the audit trail.
+
+That second case is the one worth reading: the same prompt and the same tool
+produce a materially different rationale, which is the judgment the agent is
+actually for.
+
+Every leg verified in-account against the artifacts, not the invoke's word: the
+`ACTION#escalate` row (this account's schema) on each matter by a
+strongly-consistent read; the escalate Lambda's log stream through `sns.publish`;
+an `AUDIT#` decision record tying reasoning → decision → outcome; `toolConfig`
+populated in the model request (correlated by `modelRequestId`); and the
+escalation **email delivered** (SNS `NumberOfNotificationsDelivered=1`,
+`NumberOfNotificationsFailed=0`, in the publish's minute).
+
+**The architecture reversal (ADR-007).** The managed AgentCore Harness was the
+intended agent runtime, but its runtime **did not inject tools** into the model
+request — the configured gateway tool, an inline tool, and even the built-in
+tools were all absent from the literal ConverseStream request (proven from
+Bedrock model-invocation logs; the three-invocation table is in ADR-007). The
+model reasoned but had no tool to call, so it narrated the call as JSON and
+stopped. Resolution: **retire the Harness, keep the Gateway.** Orchestration moved
+to a client-side loop (`scripts/agent-loop.py`): direct Bedrock Converse with a
+`toolConfig` the loop builds, `toolChoice: auto` (so "do nothing" stays a valid
+outcome), dispatching `tool_use` through the same Gateway (SigV4/MCP) to the
+escalate Lambda. The client owns judgment; the Gateway still owns governed
+execution and the per-call log. The `decide_and_act` core is written to port to a
+Lambda trigger (state-change / scheduled sweep) without a rewrite.
+
+**Findings** (full detail in [docs/step-6-agent-design.md](docs/step-6-agent-design.md)
+and [ADR-007](docs/decisions/ADR-007-harness-tool-injection-failure.md)):
+
+- **The managed-Harness base-permission contract.** A self-built Harness role
+  must carry `bedrock-agentcore:GetWorkloadAccessToken`, X-Ray, logs, metrics, and
+  ECR-public — the AgentCore CLI auto-provisions these, CDK does not. Missing
+  them, the Harness fails silently. (Necessary — but not sufficient; see below.)
+- **The managed-Harness tool-injection defect.** Even with the role correct and
+  the Harness freshly created, the runtime injected no tools. Not config, not the
+  gateway, not the model (a direct Converse with a `toolConfig` emits a real
+  `tool_use`). A managed-runtime defect, proven from the request bytes.
+- **The log-group retain bug.** `useCdkManagedLogGroup` gives each Lambda a RETAIN
+  log group that orphans on destroy and collides on the next create; fixed by
+  owning each with a DESTROY policy (the deferred Step-5 item, now done).
+- **The email-subscription confirmation trap.** An SNS email subscription is
+  created `PendingConfirmation` and needs a human click; CloudFormation reports
+  `CREATE_COMPLETE` without waiting, and SNS **auto-deletes an unconfirmed
+  subscription after ~3 days** — so the repeated destroy/recreate churn left the
+  topic with **zero subscribers** while CFN still held the dead ARN (drift). The
+  tool published successfully to nobody. Two consequences worth keeping:
+  **(1)** a publish to a topic with no confirmed subscriber is **dropped, never
+  queued or redelivered** — that notification is gone permanently, so confirm
+  *before* the publish; **(2)** because the resource already existed in the
+  template, re-adding it would have been a no-op — the fix was to give the
+  subscription an explicit, stably-named construct (`EscalationEmailSub`), whose
+  new logical id forces CFN to replace the drifted resource and re-send the
+  confirmation. The durable upgrade (no click, survives any redeploy) is
+  SNS → SQS, or SNS → Lambda → SES once the domain is verified.
+- **The verification lesson.** Metrics, script self-reports, emitted tool-use
+  blocks, and even a confident human "close-out" summary each lied at least once.
+  The only truth was the persisted artifact read with a strongly-consistent read;
+  a verifier must not be able to see the actor's output, or it echoes intent as
+  fact.
+
+**Deferred:**
+
+- **ADR-001 model eval** — now genuinely unblocked: the loop exists and works, so
+  "build strong, eval down" can measure decision quality (escalate / remind /
+  abstain under `toolChoice: auto`) across models. Model-invocation logging is
+  left ON for it (delivery role + log group + account-level config, tracked for
+  cleanup).
+- **Cedar Policy** — deferred to `send_reminder`; the Gateway is the enforcement
+  point when it lands.
+- **Idempotency keyed on `docType`** — the escalate row SK includes the exact
+  `docType`, which came through as a composite (`census, signed-employer-
+  application`) when the agent escalated both documents at once. A different
+  `docType` value would key a separate row; revisit in the multi-touch cadence
+  pass.
 
 ## Layout
 
