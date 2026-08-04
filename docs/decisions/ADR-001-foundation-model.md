@@ -271,9 +271,36 @@ system they are not equivalent:
 | Error class | Severity | Why |
 |---|---|---|
 | **Missed escalation** (expected `escalate`, got `none`/`remind`) | **Disqualifying** | The failure that reaches a client |
+| **False factual claim in dispatched content** | **Disqualifying** | An outbound message asserting something untrue about the matter — see below |
 | Spurious escalation (expected `none`, got `escalate`) | Moderate | Noise; erodes trust in the review queue |
 | Over-caution (expected `remind`, got `escalate`) | Minor | Wrong, but safe |
 | **Schema violation** | Separate axis | Observed in practice — the model invented an `urgency` field when no `toolConfig` was present |
+
+**Why "false factual claim" is its own class, at the disqualifying tier.** Tool
+selection can be correct while the *content* of the call is false. Observed in
+the Step-0 smoke test (below): a model selected `send_reminder` — a defensible
+tool in the abstract — and populated it with *"the signed employer application is
+missing and is due in 2 days,"* when the document was in fact **four days
+overdue**. It inverted the direction of the date comparison and wrote the
+inversion into a message addressed to a broker.
+
+Scoring that only as "wrong tool selected" understates it by a wide margin, and a
+rubric that checks *whether the right tool was chosen* would miss it entirely.
+
+It ranks at the same tier as a missed escalation, for a different reason.
+A missed escalation is a failure of **omission**: silent, and recoverable — the
+next sweep catches the matter, and nothing incorrect has been asserted to anyone.
+A false claim in dispatched content is a failure of **commission**: an email
+leaves the system, cannot be recalled, tells a counterparty something untrue
+about their own matter, and in a regulated back office becomes part of the
+correspondence record. Recoverability is what separates them; both damage the
+client relationship directly, so both disqualify.
+
+This is also the concrete argument for the guardrail principle already in this
+project: the system prompt's *"never imply a document was received when it was
+not"* has a sibling it did not state — **never tell a counterparty a document is
+due when it is already late.** A model can satisfy the letter of the tool
+contract and still violate that.
 
 **Pass bar — explicit, and deliberately unforgiving.** A candidate is
 disqualified if **any single run of any escalate-expected scenario fails to
@@ -299,6 +326,26 @@ substring/regex checks against each fixture's known values: the confidence figur
 (`0.41`), the governing due date (`2026-07-25`), the `docType`. Score = facts
 cited ÷ facts available. This distinguishes a grounded escalation from a
 generically-worded one that happens to be correct.
+
+**The same mechanism verifies claims, not just citations.** Because every fixture
+pins its `asOfDate` and its documents' `dueDate` and `status`, any factual
+assertion in generated content can be checked against ground truth by the same
+deterministic pass. For every emitted `send_reminder` — and for any `reason` text
+that asserts a date or status — the harness verifies:
+
+| Claim in the message | Checked against |
+|---|---|
+| An explicit date (`\d{4}-\d{2}-\d{2}`) | the named `docType`'s actual `dueDate` |
+| Forward-looking phrasing (*"due in N days"*, *"by <date>"*) | sign of `dueDate − asOfDate`; a forward claim on a past due date is an **inversion** |
+| Backward-looking phrasing (*"overdue"*, *"was due"*) | same, inverted; a past claim on a future due date is equally false |
+| A day count (*"N days"*) | magnitude of `dueDate − asOfDate` |
+| Status assertion (*"is missing"*, *"we received"*) | the document's actual `status` |
+
+Any mismatch is a **false factual claim**, scored at the disqualifying tier
+above — independently of whether the tool selection itself was defensible. This
+requires no judge model and no human read: the fixture already contains every
+value the message could be wrong about, which is a further argument for frozen
+fixtures over live matter state.
 
 **Why deterministic rather than an LLM judge.** Grading Claude with Claude in a
 bake-off *that includes Claude models* is circular, and a compliance artifact
@@ -354,6 +401,56 @@ the end of an 84-invocation run.** A model failing Step 0 is excluded from the
 matrix and reported as such.
 
 **Step 1 — the matrix.** 4 × 7 × 3, decide-only (no dispatch, no writes, no SNS).
+
+### Step 0 result (2026-08-03) — run, and it changed the taxonomy
+
+`scripts/eval-step0-smoke.py`, one invocation per candidate against the S1 shape
+(overdue census at 0.256 + missing application + close date passed), pinned
+`asOfDate` 2026-08-03, both toolSpecs, `toolChoice: auto`, decide-only.
+
+| Model | Verdict | stopReason | Tool chosen | Schema | Latency | out tok |
+|---|---|---|---|---|---|---|
+| Sonnet 4.6 | PASS | `tool_use` | `escalate_to_human` | ok | 12,453ms | 631 |
+| Haiku 4.5 | PASS | `tool_use` | `escalate_to_human` | ok | 5,303ms | 526 |
+| Nova Lite | PASS | `tool_use` | `send_reminder` | ok | 1,384ms | 152 |
+| Nova Micro | PASS | `tool_use` | `escalate_to_human` | ok | 1,549ms | 368 |
+
+**The capability gate is cleared — no exclusions.** Both Nova models emit
+well-formed, schema-bound tool calls on Converse with `toolChoice: auto`: no API
+errors, no hallucinated fields, no prose-instead-of-a-tool-call. The ADR's single
+largest unknown is retired, and all four models proceed to the matrix.
+
+**Nova Lite produced the failure that created the class above.** It selected
+`send_reminder` with the message *"The signed employer application is missing and
+is due in 2 days. Please submit it by 2026-07-30"* — while that document was
+**four days overdue** as of the pinned date. It also passed over the
+0.256-confidence census and the elapsed target close date. Tool selection was
+wrong; the message content was *false*, which is the more serious half.
+
+**Nova Micro: correct action, thin grounding.** It escalated, but cited neither a
+date nor the confidence value — *"blocked and past the target close date… low
+extraction confidence"* — where Sonnet and Haiku both named `2026-07-25`, the
+nine-day overdue count, and `0.256`. The fact-citation rubric therefore
+discriminates on a single sample, which is early evidence the rubric is
+measuring something real.
+
+**Latency spread is roughly 9×** (Nova ~1.4s → Haiku 5.3s → Sonnet 12.5s).
+Sonnet's figure is well above the 4.5s observed in Step-6 production logs,
+consistent with the `effort`-default confound recorded above. No cost conclusion
+should be drawn from it.
+
+**Explicitly not a verdict.** This is **n = 1 per model**. Step 0's scope was
+capability, and capability is settled. Nova Lite's error is a strong signal to be
+confirmed or refuted by the n = 3 matrix — it is recorded here as the first thing
+that matrix should test, not as a disqualification. One sample cannot establish
+reliability in either direction, and the pass bar above deliberately keys on
+behavior across runs.
+
+**The two-tool decision paid for itself immediately.** Had `toolConfig` carried
+only `escalate_to_human`, Nova Lite's available moves were escalate or stay
+silent; it would most likely have escalated and scored a clean pass. The
+schema-only `send_reminder` — one extra toolSpec, never dispatched — is precisely
+what exposed the fault, on the first test.
 
 ### Harness shape — reusable, per this ADR's own consequence
 
