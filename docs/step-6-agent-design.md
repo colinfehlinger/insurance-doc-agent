@@ -132,6 +132,47 @@ recipient, over-cadence, reminding when it should escalate). So: **thin slice =
 prompt only; tool-expansion pass = add the Cedar policy set above at the
 Gateway.** Stated plainly so it is a scheduled addition, not an omission.
 
+### PRINCIPLE — a probabilistic guard is not a structural guarantee (2026-08-04)
+
+The generalizable lesson from the Step-6 → sweep arc, stated once here because it
+has now come up four separate times and will come up again.
+
+**A model behaving correctly is evidence, not a control.** The two are routinely
+confused because they produce identical output right up until they don't:
+
+| Behaviour | What we have | What it is |
+|---|---|---|
+| Agent abstains on an already-escalated matter | ADR-001 S3: 3/3, both eligible models | Evidence. The model *chose* well. |
+| Agent cannot double-escalate | Conditional put on `ACTION#escalate#<docType>` | Control — but only as strong as its key |
+| Agent respects the reminder cap | ADR-001 S7: all candidates correct | Evidence. Nothing *prevents* a fourth reminder. |
+| Agent never sends in a dry run | `dispatch` must be explicitly `True` | Control. A missing key cannot dispatch. |
+
+The distinction is invisible at one invocation a day and decisive at N per night.
+A 3/3 result means "did not fail three times", which is a different claim from
+"cannot fail" — and the gap between them is exactly the volume you plan to run at.
+
+Three concrete applications, all now in the code:
+
+1. **Pre-filter before the model, not instead of it.** The sweep skips matters
+   already carrying an `ACTION#escalate` row *before* spending a model call.
+   The agent would very likely have abstained; the point is that it no longer
+   has to be right for the system to be safe. Structural check first, model
+   second — and it saves the tokens as a side effect, not as the motivation.
+2. **Idempotency keys must not be model-authored.** `ACTION#escalate#<docType>`
+   was a real control whose key came from the model's phrasing, so `"census"` and
+   `"census, signed-employer-application"` silently keyed different rows. The
+   escalate Lambda now canonicalises `docType`, which is what turns the
+   conditional put back into a guarantee rather than a usually-works.
+3. **Safety switches fail safe, and default to opt-in.** The dispatch gate reads
+   `cfg.get("dispatch") is True`, not falsiness on an opt-out key. The earlier
+   form meant an *omitted* key fell through to dispatch — and a missing key is
+   precisely what a new caller or a half-finished refactor produces. The failure
+   mode of "forgot to set a flag" must be "did nothing", never "sent email".
+
+The heuristic: **when a check protects something irreversible, ask what happens
+if the model is wrong, and then what happens if the config is wrong.** If either
+answer is "it acts anyway", the guard is advisory.
+
 ### TRACKED GAP — the reminder cap is prompt-only and unvalidated (2026-08-04)
 
 Found while authoring the ADR-001 eval's S7 scenario: `system-prompt.md` stated
