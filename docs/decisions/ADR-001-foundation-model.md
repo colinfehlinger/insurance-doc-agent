@@ -1,9 +1,9 @@
 # ADR-001 — Foundation model for the Document-Chase Agent
 
-**Status:** Partially decided. Probe model chosen; **eval re-sequenced to the Step-6 tail / Step 7** (updated 2026-07-25 — it needs the real agent + tools to be meaningful).
-**Date:** 2026-07-22 · **Updated:** 2026-07-25 (Step 6 design: build-then-eval sequencing + harness design)
+**Status:** Partially decided. Probe model chosen; **eval fully designed and unblocked (2026-08-03)** — Step 6 shipped a working agent, so the tool-selection surface the eval needs now exists. Ready to run; not yet run.
+**Date:** 2026-07-22 · **Updated:** 2026-08-03 (eval design: candidates, scenario matrix, scoring, run sequence, measurement corrections)
 **Supersedes:** nothing
-**Related:** [ADR-002](ADR-002-bda-vs-textract.md) (the understanding layer picks its own model separately), [ADR-006](ADR-006-agent-architecture.md) (the agent this model runs in)
+**Related:** [ADR-002](ADR-002-bda-vs-textract.md) (the understanding layer picks its own model separately), [ADR-006](ADR-006-agent-architecture.md) (the agent this model runs in), [ADR-007](ADR-007-harness-tool-injection-failure.md) (retired the Harness — moves the model seam this ADR depends on)
 
 ---
 
@@ -157,6 +157,218 @@ replay the synthetic matter set, score.
   easy majority and diverges only at the escalation boundary, tier: cheap for
   routine, escalate to a stronger model near the boundary. If it fails broadly,
   tiering buys nothing and the answer is the stronger model.
+
+## Update (2026-08-03) — the eval, designed and unblocked
+
+Step 6 shipped a working agent that decides and acts (ADR-007), so the
+tool-selection surface this eval measures now exists. This section specifies the
+eval completely: candidates, scenarios, scoring, and run order. **It has not been
+run.**
+
+Three claims made earlier in this ADR are corrected below by measurement — the
+prompt-caching assumption, the pricing table, and the Harness-swap mechanism.
+
+### Corrections to earlier assumptions
+
+**1. Prompt caching does not apply at this prompt size.** This ADR twice asserts
+caching must be ON for every candidate, and that an uncached cost figure "would
+overstate the case for the cheap model." **Measured: it cannot engage.**
+`agent/system-prompt.md` is 3,948 chars ≈ **~990 tokens**. The minimum cacheable
+prefix is **1,024 tokens on Sonnet 4.6 and 4,096 on Haiku 4.5** — below the
+minimum, caching silently no-ops with no error. A live invocation record confirms
+it: `cacheReadInputTokens: 0`, `cacheWriteInputTokens: 0`. Two further points:
+automatic caching is unavailable on Bedrock (explicit cache points required), and
+caches are per-model, so there is no cross-model sharing to bias a comparison.
+**Therefore: measure uncached.** That is apples-to-apples regardless, and the
+earlier concern about caching skewing the comparison does not arise. Revisit only
+if the prompt grows ~4× — Haiku's 4,096-token minimum is the binding constraint.
+
+**2. The pricing table above (lines ~20–31) is unverified and possibly stale.**
+It was written 2026-07-22 from memory. It is retained as historical context for
+the ~100× spread that motivated this ADR, but **no rate in it should be used for
+a decision.** Bedrock is partner-priced separately from the first-party API and
+rates move. **The harness therefore captures tokens, never cost**; cost is
+computed at report time against rates fetched fresh. No rate is hardcoded.
+
+**Standing rule — do not add a rate table to this ADR or to the harness, ever.**
+Cost computation stays a report-time step. A rate committed to the repo is
+correct until AWS reprices, silently wrong afterwards, and gives a stale number
+the authority of a decision record. Tokens are a measurement and do not expire;
+prices are a lookup and do. Keep the two separate.
+
+**3. The model seam moved.** The 2026-07-25 update said the model is a
+`CfnHarness` `model` property and that swapping is a config change. **ADR-007
+retired the Harness.** The seam is now `MODEL_ID` in `scripts/agent-loop.py`
+(env-overridable) — still a one-line swap, still no rebuild, so the *principle*
+holds and the eval design is unaffected. The mechanism description is superseded.
+
+### Candidates — verified in-account, authoritative IDs
+
+Confirmed ACTIVE in 000000000000 via `list_inference_profiles` (not from memory —
+a fabricated model ID cost a full cycle in Step 6):
+
+| Model | Inference profile ID | Role |
+|---|---|---|
+| Claude Sonnet 4.6 | `us.anthropic.claude-sonnet-4-6` | incumbent / control |
+| Claude Haiku 4.5 | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | candidate |
+| Amazon Nova Lite | `us.amazon.nova-lite-v1:0` | candidate |
+| Amazon Nova Micro | `us.amazon.nova-micro-v1:0` | candidate |
+
+All four route across us-east-1/us-east-2/us-west-2.
+
+### The tool surface: `send_reminder` is included, schema-only
+
+The eval's `toolConfig` carries **two** tool specs: `escalate_to_human` (real,
+built) and **`send_reminder` (schema only — never dispatched)**.
+
+This is the design decision that determines whether the eval measures anything.
+With one tool, a model that escalates *everything* scores 100% on every escalate
+scenario — the eval would measure eagerness, not judgment. A second tool makes
+selection a genuine **three-way choice** (escalate / remind / do nothing), which
+is the actual product claim. A `toolSpec` is only a schema; in decide-only mode
+nothing is dispatched, so including it costs nothing and risks nothing.
+
+**Recorded limitation:** `send_reminder` has no Lambda behind it (blocked on the
+SES sender identity — ADR-005). A `remind` selection is therefore scored as
+*correct tool choice only* and is never executed. The remaining three tools of
+the original five (`schedule_followup`, `update_matter`, `flag_anomaly`) are out
+of scope for this eval.
+
+### Scenario matrix — 7 fixtures, zero new seed matters
+
+| ID | Matter state | Expected | Provenance |
+|---|---|---|---|
+| S1 | Census overdue (0.26 conf) + application missing + close date passed | `escalate` | verified live (MTR-2026-0142) |
+| S2 | Census received `in-review` at 0.41 conf, **not** overdue | `escalate` (data quality) | verified live (MTR-2026-0157) |
+| S3 | S1 state, with `ACTION#escalate` already in history | `none` | verified live (0142 re-run) |
+| S4 | All docs received, high confidence, due dates future | `none` | new |
+| S5 | Doc missing, due in 14 days | `none` | new |
+| S6 | Doc missing, due in 2 days, no prior reminder | `remind` | new — the untested branch |
+| S7 | Doc missing, reminder limit reached | `escalate` | new — the prompt's own rule |
+
+S1–S3 encode outcomes already observed in production runs. S6 exercises the
+remind branch, which has **never** been tested. S7 tests a rule the system prompt
+states explicitly ("never send more than the configured number of reminders
+without escalating") and which nothing has yet exercised.
+
+**Fixtures, not seeded matters.** Each scenario is a frozen JSON fixture with a
+**pinned `asOfDate`**, derived once from the real matters where they exist and
+hand-authored otherwise. The seed script uses *relative* dates
+(`daysFromNow`), so a seeded matter's "overdue" drifts daily and a re-run next
+month would silently be testing different inputs. Fixtures give reproducible
+model-to-model comparison, require no table mutation, need no credentials to
+evaluate, and let scenarios be added without a seed run. **Zero new seed matters
+are required**; the live matters remain the end-to-end integration proof, which
+is a separate job from measurement.
+
+### Scoring
+
+**Primary — exact match on tool selection.** Expected ∈ {`escalate`, `remind`,
+`none`}; observed is the emitted tool, or `none` on `end_turn`. Binary per
+(model, scenario, run). Errors are weighted by class, because in a compliance
+system they are not equivalent:
+
+| Error class | Severity | Why |
+|---|---|---|
+| **Missed escalation** (expected `escalate`, got `none`/`remind`) | **Disqualifying** | The failure that reaches a client |
+| Spurious escalation (expected `none`, got `escalate`) | Moderate | Noise; erodes trust in the review queue |
+| Over-caution (expected `remind`, got `escalate`) | Minor | Wrong, but safe |
+| **Schema violation** | Separate axis | Observed in practice — the model invented an `urgency` field when no `toolConfig` was present |
+
+**Pass bar — explicit, and deliberately unforgiving.** A candidate is
+disqualified if **any single run of any escalate-expected scenario fails to
+escalate**. Not an average, not a rate, not best-of-three: **one miss in any of
+the three runs disqualifies the model for that scenario.**
+
+This is a deliberate design choice, not an oversight. **A compliance system does
+not get to average away a missed escalation** — the client whose matter was
+missed is not consoled by a 97% aggregate. It follows directly from the
+guardrail-adherence bar already set above ("100% — no tolerance"); this update
+only makes the arithmetic explicit.
+
+**A known and accepted consequence:** because sampling at temperature 0 is not
+fully deterministic, a model can be disqualified by a single unlucky run. **That
+is intended, not a flaw in the eval.** A model that misses an escalation once in
+three attempts on a fixed input is a model that will miss escalations in
+production; surfacing that is the eval working correctly. A model whose
+correctness depends on which sample you drew has not earned the escalation path.
+
+**Secondary — reasoning grounding, mechanically checked.** For each escalation,
+does the `reason` cite the actual disqualifying facts? Deterministic
+substring/regex checks against each fixture's known values: the confidence figure
+(`0.41`), the governing due date (`2026-07-25`), the `docType`. Score = facts
+cited ÷ facts available. This distinguishes a grounded escalation from a
+generically-worded one that happens to be correct.
+
+**Why deterministic rather than an LLM judge.** Grading Claude with Claude in a
+bake-off *that includes Claude models* is circular, and a compliance artifact
+should be reproducible and hand-auditable. An LLM judge is **advisory only** — run
+it on disagreements or ambiguous framing, never as the scored metric.
+
+**Runs: n = 3 per (model, scenario)**, reporting consistency (unanimous / split).
+4 models × 7 scenarios × 3 runs = **84 invocations** — cheap enough that
+determinism is worth measuring rather than assuming.
+
+**Summary bar for replacing Sonnet 4.6:** zero missed escalations across all runs
+(above), zero schema violations, and a fact-citation score within a stated margin
+of the incumbent. Cost does not buy exemptions.
+
+### Cost and latency capture — no extra instrumentation needed
+
+Verified from a live model-invocation log record. Each record carries:
+
+```
+input.inputTokenCount            output.outputTokenCount
+usage{ inputTokens, outputTokens, totalTokens,
+       cacheReadInputTokens, cacheWriteInputTokens }
+metrics{ latencyMs }             ← latency is captured
+requestId, modelId, operation, timestamp, inferenceRegion
+```
+
+`requestId` correlates to the `modelRequestId` already recorded on every `AUDIT#`
+row, so cost and latency join to the decision that produced them. The Converse
+response returns the same `usage`/`metrics` inline, so the harness captures from
+the response and uses the logs as the audit backstop.
+
+**Two confounds to state in the report, not discover afterwards:**
+
+1. **Routed region varies.** A sampled record shows `inferenceRegion: us-east-2`
+   — cross-region inference routed the call out of us-east-1, and the routed
+   region differs per call. Report **median and p90** latency across runs and
+   record the region per run; do not read a verdict into small deltas.
+2. **Models are compared at their defaults.** Sonnet 4.6 supports `effort`
+   (defaulting to `high`); Haiku 4.5 has no such concept. This is the
+   production-realistic comparison, but if Sonnet looks expensive, **effort is
+   the first tuning lever, not a verdict** — a follow-up sweep at lower effort
+   belongs before any conclusion about tier.
+
+### Run sequence
+
+**Step 0 — Nova tool-use smoke test, standalone and first.** One invocation per
+candidate with a `toolConfig` and a prompt that unambiguously warrants a tool
+call. Confirms each model can emit a `tool_use` block at all and honors the
+schema. **This runs and reports before the matrix.** Nova's tool-calling behavior
+on Converse is unverified in this account; if a candidate cannot reliably emit a
+tool call, that is a decisive finding worth having **in minutes, not buried at
+the end of an 84-invocation run.** A model failing Step 0 is excluded from the
+matrix and reported as such.
+
+**Step 1 — the matrix.** 4 × 7 × 3, decide-only (no dispatch, no writes, no SNS).
+
+### Harness shape — reusable, per this ADR's own consequence
+
+`scripts/eval-models.py` + `evals/scenarios/*.json` + results written to
+CSV/JSON. Decide-only: it calls Converse and scores; it never dispatches a tool,
+writes a row, or sends a notification, so it is safe to re-run and cannot poison
+matter state or trip the escalate Lambda's idempotency guard.
+
+This satisfies the consequence already recorded below — *"the evaluation harness
+built for this becomes the regression suite for every later prompt and model
+change; build it to be re-runnable."* It is not only a model bake-off: because
+`agent/system-prompt.md` is the control environment and a prompt edit is a change
+to it, the same fixtures and scoring re-run on prompt changes. The
+`promptVersion` sha already stamped on every `AUDIT#` row ties a production
+decision back to the prompt that produced it; this harness closes that loop.
 
 ## Consequences
 
