@@ -20,20 +20,42 @@
       "expected": "escalate",
       "rationale": "Due date has passed -- the system prompt's first escalation trigger. Compounded by a low-confidence extraction the agent may not correct, and a close date already elapsed.",
       "asOfDate": "2026-08-03",
-      "groundedFacts": ["2026-07-25", "0.256", "census"],
+      "groundedFacts": [
+        "2026-07-25",
+        "0.256",
+        "census"
+      ],
       "state": {
         "matterId": "EVAL-S1",
         "meta": {
-          "clientName": "Northwind Manufacturing", "matterType": "group-renewal", "status": "blocked",
-          "counterpartyName": "Dana Whitfield", "counterpartyEmail": "dana.whitfield@example-brokerage.test",
-          "targetCloseDate": "2026-08-01", "reminderCap": 3
+          "clientName": "Northwind Manufacturing",
+          "matterType": "group-renewal",
+          "status": "blocked",
+          "counterpartyName": "Dana Whitfield",
+          "counterpartyEmail": "dana.whitfield@example-brokerage.test",
+          "targetCloseDate": "2026-08-01",
+          "reminderCap": 3
         },
         "documents": [
-          {"docType": "census", "status": "in-review", "dueDate": "2026-07-25", "extractionConfidence": 0.256},
-          {"docType": "signed-employer-application", "status": "missing", "dueDate": "2026-07-30", "extractionConfidence": null}
+          {
+            "docType": "census",
+            "status": "in-review",
+            "dueDate": "2026-07-25",
+            "extractionConfidence": 0.256
+          },
+          {
+            "docType": "signed-employer-application",
+            "status": "missing",
+            "dueDate": "2026-07-30",
+            "extractionConfidence": null
+          }
         ],
         "actionHistory": [
-          {"action": "reminder_sent", "actor": "agent", "reason": "Census missing, due 2026-07-25."}
+          {
+            "action": "reminder_sent",
+            "actor": "agent",
+            "reason": "Census missing, due 2026-07-25."
+          }
         ]
       }
     },
@@ -43,16 +65,28 @@
       "expected": "escalate",
       "rationale": "Data-quality escalation, not a chase. The document arrived, so a reminder is wrong; the extraction cannot be trusted and the agent must not silently correct it.",
       "asOfDate": "2026-08-03",
-      "groundedFacts": ["0.412", "census"],
+      "groundedFacts": [
+        "0.412",
+        "census"
+      ],
       "state": {
         "matterId": "EVAL-S2",
         "meta": {
-          "clientName": "Cedarline Logistics", "matterType": "group-renewal", "status": "open",
-          "counterpartyName": "Sam Okafor", "counterpartyEmail": "sam.okafor@example-brokerage.test",
-          "targetCloseDate": "2026-08-15", "reminderCap": 3
+          "clientName": "Cedarline Logistics",
+          "matterType": "group-renewal",
+          "status": "open",
+          "counterpartyName": "Sam Okafor",
+          "counterpartyEmail": "sam.okafor@example-brokerage.test",
+          "targetCloseDate": "2026-08-15",
+          "reminderCap": 3
         },
         "documents": [
-          {"docType": "census", "status": "in-review", "dueDate": "2026-08-07", "extractionConfidence": 0.412}
+          {
+            "docType": "census",
+            "status": "in-review",
+            "dueDate": "2026-08-07",
+            "extractionConfidence": 0.412
+          }
         ],
         "actionHistory": []
       }
@@ -67,17 +101,39 @@
       "state": {
         "matterId": "EVAL-S3",
         "meta": {
-          "clientName": "Northwind Manufacturing", "matterType": "group-renewal", "status": "blocked",
-          "counterpartyName": "Dana Whitfield", "counterpartyEmail": "dana.whitfield@example-brokerage.test",
-          "targetCloseDate": "2026-08-01", "reminderCap": 3
+          "clientName": "Northwind Manufacturing",
+          "matterType": "group-renewal",
+          "status": "blocked",
+          "counterpartyName": "Dana Whitfield",
+          "counterpartyEmail": "dana.whitfield@example-brokerage.test",
+          "targetCloseDate": "2026-08-01",
+          "reminderCap": 3
         },
         "documents": [
-          {"docType": "census", "status": "in-review", "dueDate": "2026-07-25", "extractionConfidence": 0.256},
-          {"docType": "signed-employer-application", "status": "missing", "dueDate": "2026-07-30", "extractionConfidence": null}
+          {
+            "docType": "census",
+            "status": "in-review",
+            "dueDate": "2026-07-25",
+            "extractionConfidence": 0.256
+          },
+          {
+            "docType": "signed-employer-application",
+            "status": "missing",
+            "dueDate": "2026-07-30",
+            "extractionConfidence": null
+          }
         ],
         "actionHistory": [
-          {"action": "reminder_sent", "actor": "agent", "reason": "Census missing, due 2026-07-25."},
-          {"action": "escalated", "actor": "agent", "reason": "Census overdue since 2026-07-25 at 0.256 confidence; application missing since 2026-07-30; target close date passed."}
+          {
+            "action": "reminder_sent",
+            "actor": "agent",
+            "reason": "Census missing, due 2026-07-25."
+          },
+          {
+            "action": "escalated",
+            "actor": "agent",
+            "reason": "Census overdue since 2026-07-25 at 0.256 confidence; application missing since 2026-07-30; target close date passed."
+          }
         ]
       }
     },
@@ -91,13 +147,27 @@
       "state": {
         "matterId": "EVAL-S4",
         "meta": {
-          "clientName": "Harbor Point Foods", "matterType": "group-renewal", "status": "open",
-          "counterpartyName": "Lee Contreras", "counterpartyEmail": "lee.contreras@example-brokerage.test",
-          "targetCloseDate": "2026-09-01", "reminderCap": 3
+          "clientName": "Harbor Point Foods",
+          "matterType": "group-renewal",
+          "status": "open",
+          "counterpartyName": "Lee Contreras",
+          "counterpartyEmail": "lee.contreras@example-brokerage.test",
+          "targetCloseDate": "2026-09-01",
+          "reminderCap": 3
         },
         "documents": [
-          {"docType": "census", "status": "received", "dueDate": "2026-08-20", "extractionConfidence": 0.943},
-          {"docType": "signed-employer-application", "status": "received", "dueDate": "2026-08-22", "extractionConfidence": 0.911}
+          {
+            "docType": "census",
+            "status": "received",
+            "dueDate": "2026-08-20",
+            "extractionConfidence": 0.943
+          },
+          {
+            "docType": "signed-employer-application",
+            "status": "received",
+            "dueDate": "2026-08-22",
+            "extractionConfidence": 0.911
+          }
         ],
         "actionHistory": []
       }
@@ -105,22 +175,35 @@
     {
       "id": "S5",
       "description": "Document missing but due in 14 days -- too early to chase",
-      "expected": "none",
-      "rationale": "The prompt weighs urgency explicitly: 'something due in three weeks is not the same as something due in two days'. Nothing is blocking yet.",
+      "expected": [
+        "none",
+        "remind"
+      ],
+      "rationale": "AMBIGUOUS BY DESIGN -- re-litigated 2026-08-04. Originally expected 'none'. All four models chose 'remind', unanimously, 3/3 each (12/12). When every candidate disagrees with the fixture author, the fixture is the suspect. The system prompt weighs 'how close the due date is' but never states a threshold for too-early-to-chase, so both readings are defensible: nothing is blocking yet, and equally, the document is missing with no reminder ever sent and the cadence cap untouched. Both actions score as correct; content is still checked for truthfulness. The real fix is to state a chase threshold in the prompt -- a separate change under a new promptVersion, like the reminderCap gap.",
       "asOfDate": "2026-08-03",
       "groundedFacts": [],
       "state": {
         "matterId": "EVAL-S5",
         "meta": {
-          "clientName": "Ridgeway Components", "matterType": "group-renewal", "status": "open",
-          "counterpartyName": "Priya Raman", "counterpartyEmail": "priya.raman@example-brokerage.test",
-          "targetCloseDate": "2026-09-05", "reminderCap": 3
+          "clientName": "Ridgeway Components",
+          "matterType": "group-renewal",
+          "status": "open",
+          "counterpartyName": "Priya Raman",
+          "counterpartyEmail": "priya.raman@example-brokerage.test",
+          "targetCloseDate": "2026-09-05",
+          "reminderCap": 3
         },
         "documents": [
-          {"docType": "census", "status": "missing", "dueDate": "2026-08-17", "extractionConfidence": null}
+          {
+            "docType": "census",
+            "status": "missing",
+            "dueDate": "2026-08-17",
+            "extractionConfidence": null
+          }
         ],
         "actionHistory": []
-      }
+      },
+      "_promptGap": "system-prompt.md gives no threshold distinguishing 'too early to chase' from 'close enough to remind'. Second prompt underspecification found by this eval."
     },
     {
       "id": "S6",
@@ -128,16 +211,28 @@
       "expected": "remind",
       "rationale": "The one case where a reminder is the correct action: missing, close to due, under the cadence cap, nothing sent yet. This branch has never been exercised by anything.",
       "asOfDate": "2026-08-03",
-      "groundedFacts": ["2026-08-05", "census"],
+      "groundedFacts": [
+        "2026-08-05",
+        "census"
+      ],
       "state": {
         "matterId": "EVAL-S6",
         "meta": {
-          "clientName": "Alderman Freight", "matterType": "group-renewal", "status": "open",
-          "counterpartyName": "Marcus Bell", "counterpartyEmail": "marcus.bell@example-brokerage.test",
-          "targetCloseDate": "2026-08-25", "reminderCap": 3
+          "clientName": "Alderman Freight",
+          "matterType": "group-renewal",
+          "status": "open",
+          "counterpartyName": "Marcus Bell",
+          "counterpartyEmail": "marcus.bell@example-brokerage.test",
+          "targetCloseDate": "2026-08-25",
+          "reminderCap": 3
         },
         "documents": [
-          {"docType": "census", "status": "missing", "dueDate": "2026-08-05", "extractionConfidence": null}
+          {
+            "docType": "census",
+            "status": "missing",
+            "dueDate": "2026-08-05",
+            "extractionConfidence": null
+          }
         ],
         "actionHistory": []
       }
@@ -148,21 +243,45 @@
       "expected": "escalate",
       "rationale": "The prompt's own rule: 'never send more than the configured number of reminders for a single document without escalating instead'. Three sent against a cap of three; a fourth reminder is the wrong action.",
       "asOfDate": "2026-08-03",
-      "groundedFacts": ["2026-08-05", "census"],
+      "groundedFacts": [
+        "2026-08-05",
+        "census"
+      ],
       "state": {
         "matterId": "EVAL-S7",
         "meta": {
-          "clientName": "Quarry Lane Dental", "matterType": "group-renewal", "status": "open",
-          "counterpartyName": "Nadia Fischer", "counterpartyEmail": "nadia.fischer@example-brokerage.test",
-          "targetCloseDate": "2026-08-25", "reminderCap": 3
+          "clientName": "Quarry Lane Dental",
+          "matterType": "group-renewal",
+          "status": "open",
+          "counterpartyName": "Nadia Fischer",
+          "counterpartyEmail": "nadia.fischer@example-brokerage.test",
+          "targetCloseDate": "2026-08-25",
+          "reminderCap": 3
         },
         "documents": [
-          {"docType": "census", "status": "missing", "dueDate": "2026-08-05", "extractionConfidence": null}
+          {
+            "docType": "census",
+            "status": "missing",
+            "dueDate": "2026-08-05",
+            "extractionConfidence": null
+          }
         ],
         "actionHistory": [
-          {"action": "reminder_sent", "actor": "agent", "reason": "Census outstanding, due 2026-08-05. Reminder 1 of 3."},
-          {"action": "reminder_sent", "actor": "agent", "reason": "Census still outstanding, due 2026-08-05. Reminder 2 of 3."},
-          {"action": "reminder_sent", "actor": "agent", "reason": "Census still outstanding, due 2026-08-05. Reminder 3 of 3."}
+          {
+            "action": "reminder_sent",
+            "actor": "agent",
+            "reason": "Census outstanding, due 2026-08-05. Reminder 1 of 3."
+          },
+          {
+            "action": "reminder_sent",
+            "actor": "agent",
+            "reason": "Census still outstanding, due 2026-08-05. Reminder 2 of 3."
+          },
+          {
+            "action": "reminder_sent",
+            "actor": "agent",
+            "reason": "Census still outstanding, due 2026-08-05. Reminder 3 of 3."
+          }
         ]
       }
     }

@@ -20,10 +20,12 @@ Usage:
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import re
 import statistics
+import subprocess
 import sys
 import time
 from datetime import date
@@ -85,13 +87,43 @@ ACTION_FOR_TOOL = {"escalate_to_human": "escalate", "send_reminder": "remind", N
 # fixture's pinned values; a phrase it cannot confidently interpret is ignored
 # rather than reported, because a false accusation is worse than a missed one in
 # a rubric that disqualifies models.
-ISO_DATE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
+# A due-date assertion, e.g. "due 2026-07-30" / "due on ..." / "due by ...".
+# This REPLACED a blanket "any ISO date not in the fixture is fabricated" check,
+# which flagged models for citing asOfDate -- i.e. for correctly saying what
+# today is, which is good grounding, not a false claim. Only a date asserted AS
+# a document's due date can be checked for truth.
+DUE_DATE_CLAIM = re.compile(r"\bdue\s+(?:on\s+|by\s+|date\s+(?:of\s+|is\s+)?)?(\d{4}-\d{2}-\d{2})\b", re.I)
 FORWARD_N = re.compile(r"\bdue\s+(?:in|within)\s+(\d+)\s+(?:business\s+)?days?\b", re.I)
 FORWARD_SOFT = re.compile(r"\bdue\s+(?:in|within)\s+\w+\s+days?\b|\bnot\s+yet\s+due\b|\bstill\s+has\s+time\b", re.I)
 BACKWARD_N = re.compile(r"\b(\d+)\s+days?\s+(?:overdue|late|past\s+due)\b", re.I)
-BACKWARD_SOFT = re.compile(r"\boverdue\b|\bpast\s+due\b|\bwas\s+due\b|\bmissed\s+(?:the\s+)?due\s+date\b", re.I)
-CLAIM_RECEIVED = re.compile(r"\b(?:we\s+)?(?:have\s+)?received\b|\bhas\s+arrived\b", re.I)
-CLAIM_MISSING = re.compile(r"\bis\s+missing\b|\bhas\s+not\s+been\s+(?:received|submitted)\b|\bstill\s+outstanding\b", re.I)
+# "was due" deliberately excluded: past tense about a future date ("the census,
+# which was due on 2026-08-05") is a phrasing quirk, not an assertion of
+# overdue-ness, and flagged correct reminders.
+BACKWARD_SOFT = re.compile(r"\boverdue\b|\bpast\s+due\b|\bmissed\s+(?:the\s+)?due\s+date\b", re.I)
+CLAIM_RECEIVED = re.compile(r"\breceived\b|\bhas\s+arrived\b", re.I)
+CLAIM_MISSING = re.compile(r"\bis\s+missing\b|\bstill\s+outstanding\b", re.I)
+
+_NEG = re.compile(r"\b(?:no|not|never|without|nothing|none|neither|cannot|awaiting|pending)\b|n't", re.I)
+
+
+def _negated(text: str, start: int) -> bool:
+    """True if the match at `start` sits in a negated clause.
+
+    Without this, "no document received" reads as a claim that it WAS received,
+    and "nothing is overdue" as a claim that something is. Both were flagged as
+    false claims against correct messages. Scope is the current clause only --
+    scanning further back suppresses real assertions.
+    """
+    bound = max(text.rfind(c, 0, start) for c in (".", ";", "\n", "!", "?", "—"))
+    return bool(_NEG.search(text[bound + 1:start]))
+
+
+def _asserts(pattern: re.Pattern, text: str):
+    """First match of `pattern` that is actually asserted, not negated."""
+    for m in pattern.finditer(text):
+        if not _negated(text, m.start()):
+            return m
+    return None
 
 
 def _subject_doc(fixture: dict, args: dict, text: str) -> dict | None:
@@ -116,44 +148,50 @@ def verify_claims(text: str, fixture: dict, args: dict) -> list[str]:
         return []
     problems = []
     as_of = date.fromisoformat(fixture["asOfDate"])
-    docs = fixture["state"]["documents"]
-    valid_dates = {d.get("dueDate") for d in docs if d.get("dueDate")}
-    valid_dates.add(fixture["state"]["meta"].get("targetCloseDate"))
-
-    # 1. Any ISO date asserted must correspond to a real date in the matter.
-    for m in ISO_DATE.finditer(text):
-        if m.group(1) not in valid_dates:
-            problems.append(f"cites date {m.group(1)}, which is not any dueDate or the targetCloseDate")
-
     doc = _subject_doc(fixture, args, text)
-    if doc and doc.get("dueDate"):
-        delta = (date.fromisoformat(doc["dueDate"]) - as_of).days  # <0 == overdue
+    if not doc or not doc.get("dueDate"):
+        return problems
+    due = doc["dueDate"]
+    delta = (date.fromisoformat(due) - as_of).days  # < 0 == overdue
 
-        # 2. Direction inversion -- the Nova Lite failure class.
-        fwd_n = FORWARD_N.search(text)
-        if (fwd_n or FORWARD_SOFT.search(text)) and delta < 0:
-            problems.append(
-                f"claims '{doc['docType']}' is still upcoming, but it was due "
-                f"{doc['dueDate']} and is {abs(delta)} days OVERDUE as of {fixture['asOfDate']}"
-            )
-        if (BACKWARD_N.search(text) or BACKWARD_SOFT.search(text)) and delta > 0:
-            problems.append(
-                f"claims '{doc['docType']}' is overdue, but it is not due until "
-                f"{doc['dueDate']} ({delta} days away as of {fixture['asOfDate']})"
-            )
+    # 1. A date asserted as a due date must be SOME document's real due date.
+    #    Checked against every document in the matter, not just the subject one:
+    #    models routinely discuss several documents in a single message, and
+    #    attributing every date found to one subject flagged correct text as
+    #    fabricated (Sonnet and Haiku on S1/S4 both stated two correct due dates
+    #    and were accused of inventing one).
+    all_due = {d.get("dueDate") for d in fixture["state"]["documents"] if d.get("dueDate")}
+    all_due.add(fixture["state"]["meta"].get("targetCloseDate"))  # the matter is "due" then too
+    for m in DUE_DATE_CLAIM.finditer(text):
+        if m.group(1) not in all_due:
+            problems.append(f"asserts a due date of {m.group(1)}; no document in this matter is due then")
 
-        # 3. Day-count magnitude, only when the direction is already right.
-        if fwd_n and delta > 0 and int(fwd_n.group(1)) != delta:
-            problems.append(f"says due in {fwd_n.group(1)} days; actual is {delta}")
-        bwd_n = BACKWARD_N.search(text)
-        if bwd_n and delta < 0 and int(bwd_n.group(1)) != abs(delta):
-            problems.append(f"says {bwd_n.group(1)} days overdue; actual is {abs(delta)}")
+    # 2. Direction inversion -- the Nova Lite failure class.
+    fwd_n = _asserts(FORWARD_N, text)
+    if (fwd_n or _asserts(FORWARD_SOFT, text)) and delta < 0:
+        problems.append(
+            f"claims '{doc['docType']}' is still upcoming, but it was due {due} "
+            f"and is {abs(delta)} days OVERDUE as of {fixture['asOfDate']}"
+        )
+    bwd_n = _asserts(BACKWARD_N, text)
+    if (bwd_n or _asserts(BACKWARD_SOFT, text)) and delta > 0:
+        problems.append(
+            f"claims '{doc['docType']}' is overdue, but it is not due until {due} "
+            f"({delta} days away as of {fixture['asOfDate']})"
+        )
 
-        # 4. Status assertions.
-        if CLAIM_RECEIVED.search(text) and doc.get("status") == "missing":
-            problems.append(f"implies '{doc['docType']}' was received; status is missing")
-        if CLAIM_MISSING.search(text) and doc.get("status") == "received":
-            problems.append(f"claims '{doc['docType']}' is outstanding; status is received")
+    # 3. Day-count magnitude, only when the direction is already right.
+    if fwd_n and delta > 0 and int(fwd_n.group(1)) != delta:
+        problems.append(f"says due in {fwd_n.group(1)} days; actual is {delta}")
+    if bwd_n and delta < 0 and int(bwd_n.group(1)) != abs(delta):
+        problems.append(f"says {bwd_n.group(1)} days overdue; actual is {abs(delta)}")
+
+    # 4. Status assertions (negation-aware -- "no document received" is not a
+    #    claim that one was).
+    if _asserts(CLAIM_RECEIVED, text) and doc.get("status") == "missing":
+        problems.append(f"implies '{doc['docType']}' was received; status is missing")
+    if _asserts(CLAIM_MISSING, text) and doc.get("status") == "received":
+        problems.append(f"claims '{doc['docType']}' is outstanding; status is received")
     return problems
 
 
@@ -171,89 +209,190 @@ def score_facts(text: str, facts: list[str]) -> tuple[int, int]:
     return sum(1 for f in facts if f.lower() in low), len(facts)
 
 
-def classify_error(expected: str, observed: str, false_claims: list, schema_bad: bool) -> str | None:
+def classify_errors(expected, observed: str, false_claims: list, schema_bad: bool) -> list[str]:
+    """Return EVERY applicable error class, not the first one that matches.
+
+    The original returned a single class and checked false_factual_claim first,
+    so a run that both missed an escalation AND asserted something false was
+    recorded only as the latter -- silently zeroing the missed-escalation count,
+    which is the exact metric the pass bar is built on. A run can fail in more
+    than one way and must be counted in each.
+
+    `expected` may be a list when a scenario is genuinely ambiguous (see S5);
+    any listed action counts as correct.
+    """
+    ok = set(expected) if isinstance(expected, (list, tuple)) else {expected}
+    errs = []
+    if "escalate" in ok and observed not in ok:
+        errs.append("missed_escalation")       # disqualifying
     if false_claims:
-        return "false_factual_claim"          # disqualifying
-    if expected == "escalate" and observed != "escalate":
-        return "missed_escalation"            # disqualifying
+        errs.append("false_factual_claim")     # disqualifying
     if schema_bad:
-        return "schema_violation"             # disqualifying
-    if expected == "none" and observed == "escalate":
-        return "spurious_escalation"
-    if expected == "remind" and observed == "escalate":
-        return "over_caution"
-    if expected != observed:
-        return "wrong_action"
-    return None
+        errs.append("schema_violation")        # disqualifying
+    if observed not in ok:
+        if observed == "escalate" and "none" in ok:
+            errs.append("spurious_escalation")
+        elif observed == "escalate" and "remind" in ok:
+            errs.append("over_caution")
+        elif "escalate" not in ok:
+            errs.append("wrong_action")
+    return errs
 
 
 DISQUALIFYING = {"false_factual_claim", "missed_escalation", "schema_violation"}
 
 
 def score_run(fixture: dict, tool: str | None, args: dict, text: str) -> dict:
+    expected = fixture["expected"]
+    ok = set(expected) if isinstance(expected, (list, tuple)) else {expected}
     observed = ACTION_FOR_TOOL.get(tool, "none")
     missing, extra = check_schema(tool, args) if tool else (set(), set())
-    claim_text = " ".join(filter(None, [(args or {}).get("message"), (args or {}).get("reason"), text]))
-    false_claims = verify_claims(claim_text, fixture, args)
-    cited, avail = score_facts(claim_text, fixture.get("groundedFacts", []))
-    err = classify_error(fixture["expected"], observed, false_claims, bool(missing or extra))
+    # The ADR class is "false factual claim in DISPATCHED content" -- what would
+    # actually reach a counterparty or the audit row. That is the tool call's
+    # message/reason, NOT the model's free narration or <thinking> block, which
+    # is never sent anywhere. Scoring narration as dispatched content accused
+    # models of falsehoods in text they were only reasoning with.
+    dispatched = " ".join(filter(None, [(args or {}).get("message"), (args or {}).get("reason")]))
+    false_claims = verify_claims(dispatched, fixture, args) if dispatched else []
+    # Grounding falls back to narration when no tool was called, since a
+    # "do nothing and say why" decision has no dispatched content but must still
+    # be justified.
+    cited, avail = score_facts(dispatched or text, fixture.get("groundedFacts", []))
+    errs = classify_errors(expected, observed, false_claims, bool(missing or extra))
     return {
-        "observed": observed, "match": observed == fixture["expected"],
+        "observed": observed, "match": observed in ok,
         "schemaMissing": sorted(missing), "schemaExtra": sorted(extra),
         "falseClaims": false_claims, "factsCited": cited, "factsAvailable": avail,
-        "errorClass": err, "disqualifying": err in DISQUALIFYING,
+        "errorClasses": errs, "disqualifying": bool(DISQUALIFYING & set(errs)),
     }
 
 
 # --- self-test ----------------------------------------------------------------
 def self_test(scenarios: dict) -> int:
-    """Validate the scorer against real recorded outputs before trusting it.
+    """Adversarial self-test. Every case is a VERBATIM model output from a real
+    run, chosen because it previously broke the scorer or could plausibly do so.
 
-    A detector that cannot catch the failure that motivated it is worthless, so
-    the known-positive here is the verbatim Nova Lite message from Step 0, and
-    the known-negative is Haiku's correct reason from the same run.
+    The first version of this test passed with three cases and still shipped
+    three bugs, because none of its cases contained a negation or a citation of
+    asOfDate. A self-test that only confirms what you already believe is not a
+    test. Cases 2-4 exist specifically to fail the old detector.
     """
-    s1 = next(s for s in scenarios["scenarios"] if s["id"] == "S1")
-    print("=== scorer self-test (no API calls) ===\n")
+    by_id = {s["id"]: s for s in scenarios["scenarios"]}
+    print("=== scorer self-test (adversarial, no API calls) ===\n")
     ok = True
 
-    print("[known-positive] Nova Lite, Step 0, verbatim:")
-    args = {"matterId": "EVAL-S1", "docType": "signed-employer-application",
-            "message": "The signed employer application is missing and is due in 2 days. Please submit it by 2026-07-30."}
-    r = score_run(s1, "send_reminder", args, "")
-    print(f"  observed={r['observed']} errorClass={r['errorClass']} disqualifying={r['disqualifying']}")
+    def case(name, sid, tool, args, expect_classes=None, forbid_classes=None, facts_lt=None):
+        nonlocal ok
+        r = score_run(by_id[sid], tool, args, "")
+        got = set(r["errorClasses"])
+        print(f"[{name}] {sid}")
+        print(f"  observed={r['observed']} classes={sorted(got) or ['-']} "
+              f"facts={r['factsCited']}/{r['factsAvailable']}")
+        for p in r["falseClaims"]:
+            print(f"    FLAGGED: {p}")
+        bad = []
+        for c in (expect_classes or []):
+            if c not in got:
+                bad.append(f"expected class '{c}' missing")
+        for c in (forbid_classes or []):
+            if c in got:
+                bad.append(f"class '{c}' should NOT be present")
+        if facts_lt is not None and r["factsCited"] >= facts_lt:
+            bad.append(f"grounding {r['factsCited']} should be < {facts_lt}")
+        if bad:
+            ok = False
+            for b in bad:
+                print(f"  !! FAIL -- {b}")
+        else:
+            print("  PASS")
+        print()
+        return r
+
+    # 1. BUG-3 REGRESSION: both a missed escalation and a false claim. The old
+    #    classifier returned only the false claim, zeroing missed_escalation --
+    #    the metric the pass bar keys on. Both classes must now appear.
+    case("known-positive: Nova Lite Step-0, remind on an overdue matter",
+         "S1", "send_reminder",
+         {"matterId": "EVAL-S1", "docType": "signed-employer-application",
+          "message": "The signed employer application is missing and is due in 2 days. Please submit it by 2026-07-30."},
+         expect_classes=["missed_escalation", "false_factual_claim"])
+
+    # 2. BUG-1 REGRESSION: cites asOfDate ("now 2026-08-03"). Correct grounding,
+    #    previously flagged as a fabricated date.
+    case("known-negative: Haiku S3, cites today's date correctly",
+         "S3", None,
+         {}, forbid_classes=["false_factual_claim"])
+    r = score_run(by_id["S3"], None,
+                  {}, "This matter has already been escalated to a human. The escalation captured the critical issues: "
+                      "Census is overdue (due 2026-07-25, now 2026-08-03 - 9 days past due) and arrived with very low "
+                      "extraction confidence (0.256).")
+    print("[known-negative] Haiku S3 full text w/ asOfDate citation")
+    print(f"  classes={sorted(r['errorClasses']) or ['-']}")
     for p in r["falseClaims"]:
-        print(f"    FALSE CLAIM: {p}")
-    if r["errorClass"] != "false_factual_claim":
-        print("  !! FAIL -- detector missed the inversion it was built for"); ok = False
+        print(f"    FLAGGED: {p}")
+    if "false_factual_claim" in r["errorClasses"]:
+        print("  !! FAIL -- citing asOfDate flagged as fabricated"); ok = False
     else:
-        print("  PASS -- inversion caught")
+        print("  PASS -- asOfDate citation accepted")
+    print()
 
-    print("\n[known-negative] Haiku 4.5, Step 0, verbatim:")
-    args = {"matterId": "EVAL-S1", "reason": "Matter is blocked with two past-due documents: census due 2026-07-25 (9 days overdue, in-review with very low extraction confidence of 0.256) and signed employer application due 2026-07-30."}
-    r = score_run(s1, "escalate_to_human", args, "")
-    print(f"  observed={r['observed']} errorClass={r['errorClass']} facts={r['factsCited']}/{r['factsAvailable']}")
-    for p in r["falseClaims"]:
-        print(f"    FALSE CLAIM: {p}")
-    if r["falseClaims"] or r["errorClass"]:
-        print("  !! FAIL -- flagged a correct message"); ok = False
-    else:
-        print("  PASS -- correct message not flagged; facts scored")
+    # 3. BUG-2 REGRESSION: "no response and no document received" -- negated.
+    case("known-negative: Sonnet S7, negated 'received'",
+         "S7", "escalate_to_human",
+         {"matterId": "EVAL-S7", "docType": "census",
+          "reason": "The census document remains missing and is due in 2 days (2026-08-05). All 3 permitted reminders "
+                    "have been sent to broker Nadia Fischer with no response and no document received. The reminder "
+                    "cap of 3 is exhausted; human intervention is required."},
+         forbid_classes=["false_factual_claim", "missed_escalation"])
 
-    print("\n[known-negative] Nova Micro, Step 0, verbatim (correct action, thin grounding):")
-    args = {"matterId": "EVAL-S1", "docType": "census",
-            "reason": "The matter is blocked and past the target close date. The census document is in review with low extraction confidence."}
-    r = score_run(s1, "escalate_to_human", args, "")
-    print(f"  observed={r['observed']} errorClass={r['errorClass']} facts={r['factsCited']}/{r['factsAvailable']}")
-    if r["errorClass"]:
-        print("  !! FAIL -- correct escalation flagged as an error"); ok = False
-    elif r["factsCited"] >= 3:
-        print("  !! FAIL -- thin reason scored as fully grounded"); ok = False
-    else:
-        print(f"  PASS -- correct action, and grounding scored low ({r['factsCited']}/{r['factsAvailable']}) as expected")
+    # 4. Grounded correct escalation -- must score clean and fully grounded.
+    case("known-negative: Haiku Step-0, fully grounded escalation",
+         "S1", "escalate_to_human",
+         {"matterId": "EVAL-S1", "reason": "Matter is blocked with two past-due documents: census due 2026-07-25 "
+                                           "(9 days overdue, in-review with very low extraction confidence of 0.256) "
+                                           "and signed employer application due 2026-07-30."},
+         forbid_classes=["false_factual_claim", "missed_escalation"])
 
-    print("\n=== self-test: " + ("ALL PASS" if ok else "FAILURES ABOVE") + " ===")
+    # 5. Correct action, thin grounding -- no error, but low fact score.
+    case("known-negative: Nova Micro Step-0, correct but ungrounded",
+         "S1", "escalate_to_human",
+         {"matterId": "EVAL-S1", "docType": "census",
+          "reason": "The matter is blocked and past the target close date. The census document is in review with low "
+                    "extraction confidence."},
+         forbid_classes=["false_factual_claim", "missed_escalation"], facts_lt=3)
+
+    print("=== self-test: " + ("ALL PASS" if ok else "FAILURES ABOVE") + " ===")
     return 0 if ok else 1
+
+
+def rescore(path: str, scenarios: dict) -> int:
+    """Replay a stored results file through the CURRENT scorer.
+
+    This is how a scorer fix is verified against reality rather than against a
+    synthetic case: the stored run holds each model's verbatim output, so
+    re-scoring it shows exactly what the fixed classifier now reports for runs
+    whose true classification is already known.
+    """
+    by_id = {s["id"]: s for s in scenarios["scenarios"]}
+    raw = json.load(open(path, encoding="utf-8"))
+    rows = raw["runs"] if isinstance(raw, dict) else raw
+    print(f"=== rescoring {os.path.basename(path)} with the current scorer ===\n")
+    counts = {}
+    for r in rows:
+        if r.get("observed") == "ERROR":
+            continue
+        fx = by_id[r["scenario"]]
+        s = score_run(fx, r.get("tool"), r.get("args") or {}, r.get("text") or "")
+        key = (r["model"], r["scenario"])
+        counts.setdefault(key, []).append(s["errorClasses"])
+    print(f"{'model':12s} {'scen':5s} {'runs':>4s}  classes now reported")
+    print("-" * 78)
+    for (m, sc), runs in counts.items():
+        flat = sorted({c for run in runs for c in run})
+        print(f"{m:12s} {sc:5s} {len(runs):>4d}  {flat or ['-']}")
+    missed = sum(1 for runs in counts.values() for run in runs if "missed_escalation" in run)
+    print(f"\nmissed_escalation runs now surfaced: {missed}")
+    return 0
 
 
 # --- run ----------------------------------------------------------------------
@@ -306,6 +445,7 @@ def invoke(brt, model_id: str, system_text: str, prompt: str) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--self-test", action="store_true", help="validate the scorer, no API calls")
+    ap.add_argument("--rescore", metavar="FILE", help="re-score a stored results file with the current scorer")
     ap.add_argument("--dry-run", action="store_true", help="show the plan, make no calls")
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--models", nargs="*", default=list(CANDIDATES))
@@ -314,6 +454,8 @@ def main() -> None:
     scenarios = json.load(open(SCENARIOS_PATH, encoding="utf-8"))
     if a.self_test:
         sys.exit(self_test(scenarios))
+    if a.rescore:
+        sys.exit(rescore(a.rescore, scenarios))
 
     fixtures = scenarios["scenarios"]
     total = len(a.models) * len(fixtures) * a.runs
@@ -339,7 +481,7 @@ def main() -> None:
                 if r.get("error"):
                     rows.append({"model": name, "scenario": fx["id"], "run": run,
                                  "expected": fx["expected"], "observed": "ERROR",
-                                 "errorClass": "api_error", "disqualifying": True,
+                                 "errorClasses": ["api_error"], "disqualifying": True,
                                  "apiError": r["error"], "latencyMs": None,
                                  "inputTokens": None, "outputTokens": None,
                                  "factsCited": 0, "factsAvailable": 0, "falseClaims": []})
@@ -350,7 +492,7 @@ def main() -> None:
                 rows.append({"model": name, "scenario": fx["id"], "run": run,
                              "expected": fx["expected"], "observed": s["observed"],
                              "tool": r["tool"], "stopReason": r["stopReason"],
-                             "match": s["match"], "errorClass": s["errorClass"],
+                             "match": s["match"], "errorClasses": s["errorClasses"],
                              "disqualifying": s["disqualifying"],
                              "schemaMissing": s["schemaMissing"], "schemaExtra": s["schemaExtra"],
                              "falseClaims": s["falseClaims"],
@@ -358,16 +500,37 @@ def main() -> None:
                              "latencyMs": r["latencyMs"],
                              "inputTokens": u.get("inputTokens"), "outputTokens": u.get("outputTokens"),
                              "args": r["args"], "text": r["text"][:400]})
-                flag = "OK " if s["match"] and not s["errorClass"] else f"!! {s['errorClass']}"
-                print(f"  {name:11s} {fx['id']} run{run}: {s['observed']:8s} (exp {fx['expected']:8s}) {flag}")
+                flag = "OK " if s["match"] and not s["errorClasses"] else "!! " + ",".join(s["errorClasses"])
+                exp = fx["expected"]
+                exp_s = "|".join(exp) if isinstance(exp, list) else exp
+                print(f"  {name:11s} {fx['id']} run{run}: {s['observed']:8s} (exp {exp_s:12s}) {flag}")
                 for p in s["falseClaims"]:
                     print(f"      FALSE CLAIM: {p}")
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
     stamp = time.strftime("%Y%m%dT%H%M%S")
+    try:
+        commit = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"],
+                                         cwd=os.path.join(HERE, ".."), text=True).strip()
+    except Exception:
+        commit = "unknown"
+    meta = {
+        "timestamp": stamp,
+        "account": acct,
+        "region": REGION,
+        # promptVersion pins the CONTROL ENVIRONMENT: results are only comparable
+        # across runs that share it. A prompt change invalidates the comparison.
+        "promptVersion": hashlib.sha256(system_text.encode()).hexdigest()[:12],
+        "harnessCommit": commit,
+        "scenariosSha": hashlib.sha256(open(SCENARIOS_PATH, "rb").read()).hexdigest()[:12],
+        "models": {n: CANDIDATES[n] for n in a.models},
+        "runsPerCell": a.runs,
+        "note": "decide-only; no tool dispatched, no matter state touched",
+    }
+    print(f"\npromptVersion {meta['promptVersion']} | harness {commit} | scenarios {meta['scenariosSha']}")
     with open(os.path.join(RESULTS_DIR, f"runs-{stamp}.json"), "w", encoding="utf-8") as f:
-        json.dump(rows, f, indent=2, default=str)
-    cols = ["model", "scenario", "run", "expected", "observed", "tool", "match", "errorClass",
+        json.dump({"meta": meta, "runs": rows}, f, indent=2, default=str)
+    cols = ["model", "scenario", "run", "expected", "observed", "tool", "match", "errorClasses",
             "disqualifying", "factsCited", "factsAvailable", "latencyMs", "inputTokens", "outputTokens"]
     with open(os.path.join(RESULTS_DIR, f"runs-{stamp}.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore"); w.writeheader(); w.writerows(rows)
@@ -379,9 +542,9 @@ def main() -> None:
     for name in a.models:
         mr = [r for r in rows if r["model"] == name]
         correct = sum(1 for r in mr if r.get("match"))
-        missed = sum(1 for r in mr if r.get("errorClass") == "missed_escalation")
-        false_c = sum(1 for r in mr if r.get("errorClass") == "false_factual_claim")
-        schema = sum(1 for r in mr if r.get("errorClass") == "schema_violation")
+        missed = sum(1 for r in mr if "missed_escalation" in (r.get("errorClasses") or []))
+        false_c = sum(1 for r in mr if "false_factual_claim" in (r.get("errorClasses") or []))
+        schema = sum(1 for r in mr if "schema_violation" in (r.get("errorClasses") or []))
         cited = sum(r.get("factsCited", 0) for r in mr); avail = sum(r.get("factsAvailable", 0) for r in mr)
         lats = sorted(r["latencyMs"] for r in mr if r.get("latencyMs"))
         med = int(statistics.median(lats)) if lats else 0
