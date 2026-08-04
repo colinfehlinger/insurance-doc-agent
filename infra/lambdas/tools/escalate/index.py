@@ -17,6 +17,7 @@
 
 import json
 import logging
+import re
 import os
 from datetime import datetime, timezone
 
@@ -49,6 +50,39 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def normalize_doc_type(raw) -> str:
+    """Canonicalise docType so the idempotency key cannot depend on phrasing.
+
+    The escalation SK is ACTION#escalate#<docType>, and docType arrives from the
+    model. Observed in the ADR-001 eval: escalating two documents at once yields
+    "census, signed-employer-application", while a later sweep on the same matter
+    may yield "census" or the same pair in the other order. Each variant is a
+    different sort key, so the conditional put -- the thing that makes this tool
+    idempotent -- silently stops protecting: a second row is written and a second
+    email is sent for a matter already escalated.
+
+    That is tolerable at one invocation and is not at a daily sweep over N
+    matters, which is why this is a prerequisite for the scheduled sweep and not
+    a cleanup. Canonical form: split on separators, collapse internal whitespace
+    to hyphens, lowercase, de-duplicate, sort, rejoin. So
+    "Signed Employer Application, Census" and "census,signed-employer-application"
+    both key to the same row.
+
+    This is the STRUCTURAL half of the guard. The matter-level half -- skipping
+    matters that already carry any ACTION#escalate row -- lives in the sweep,
+    before the model is called at all. Neither alone is sufficient.
+    """
+    if raw is None:
+        return "matter"
+    parts = []
+    for chunk in re.split(r"[,;/]+", str(raw)):
+        cleaned = re.sub(r"\s+", "-", chunk.strip().lower()).strip("-")
+        if cleaned:
+            parts.append(cleaned)
+    # dict.fromkeys de-duplicates while sorted() makes order irrelevant
+    return ",".join(sorted(dict.fromkeys(parts))) or "matter"
+
+
 def extract_args(event: dict) -> dict:
     """Pull the tool arguments defensively from whatever envelope Gateway uses."""
     for key in ("input", "arguments", "body", "parameters"):
@@ -70,7 +104,7 @@ def handler(event: dict, context) -> dict:
 
     matter_id = args.get("matterId") or args.get("matter_id")
     reason = args.get("reason") or ""
-    doc_type = args.get("docType") or args.get("doc_type") or "matter"
+    doc_type = normalize_doc_type(args.get("docType") or args.get("doc_type"))
 
     if not matter_id or not reason:
         put_metric("EscalateRejectedBadInput")
