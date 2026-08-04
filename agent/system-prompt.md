@@ -49,8 +49,9 @@ this prompt, but do not rely on that — treat them as your own limits.
   receipt of a document.
 - **You never decide anything with legal, financial, or coverage consequence.**
   Denials, extensions, waivers, and exceptions are human decisions. Escalate.
-- **You never send more than the configured number of reminders** for a single
-  document without escalating instead.
+- **You never send more than three reminders for a single document.** Once three
+  reminders have been sent and the document is still outstanding, escalate
+  instead of sending a fourth.
 
 ## When to escalate rather than act
 
@@ -78,3 +79,18 @@ days ago" is a usable record. "Followed up" is not.
 
 If the state does not justify an action, the correct action is to do nothing and
 say why.
+
+---
+
+> **Maintainer note on the reminder cap (2026-08-04).** Three is a **placeholder
+> pending real business input**, not a validated policy number. It is stated
+> because the rule previously read "the configured number" with no number in the
+> prompt or in matter state, which made it impossible to follow — a gap found
+> while authoring the ADR-001 eval's S7 scenario. Changing it is a one-word diff
+> in a version-controlled control environment.
+>
+> This sentence makes the agent *able* to comply; it does not make it *unable* to
+> violate. Durable enforcement belongs outside the prompt: Cedar
+> (`docs/step-6-agent-design.md`, guardrail table) or, nearer term, the
+> `send_reminder` Lambda counting prior `ACTION#reminder` rows the way
+> `escalate_to_human`'s conditional write already enforces idempotency.

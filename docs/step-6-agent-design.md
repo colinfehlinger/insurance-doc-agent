@@ -132,6 +132,35 @@ recipient, over-cadence, reminding when it should escalate). So: **thin slice =
 prompt only; tool-expansion pass = add the Cedar policy set above at the
 Gateway.** Stated plainly so it is a scheduled addition, not an omission.
 
+### TRACKED GAP — the reminder cap is prompt-only and unvalidated (2026-08-04)
+
+Found while authoring the ADR-001 eval's S7 scenario: `system-prompt.md` stated
+the cadence rule as *"the configured number of reminders"* — **and no number
+existed**, in the prompt or in matter state. The agent could not follow its own
+rule. Fixtures injected `reminderCap: 3` to make S7 testable, which meant S7 was
+testing the fixture rather than the prompt.
+
+Closed halfway on 2026-08-04: the prompt now names **three** explicitly, and the
+fixture injection was removed so the eval tests the real rule. Two parts remain
+open, and they must be picked up when `send_reminder` is built:
+
+1. **Three is a placeholder, not a policy.** It was chosen as a conventional
+   default, not derived from any TPA's actual cadence. It needs real business
+   input. Cheap to change — one word in a version-controlled prompt — but until
+   someone confirms it, no compliance claim should rest on the specific number.
+2. **A prompt sentence is not a control.** It makes the agent *able* to comply,
+   not *unable* to violate, and this project's own principle is that guardrails
+   must not live only in the system prompt. Enforcement belongs in the guardrail
+   table above (Cedar: deny `send_reminder` at count ≥ cap) or, available sooner
+   and without Cedar, in the `send_reminder` Lambda counting prior
+   `ACTION#reminder` rows — the same record-then-act shape that already makes
+   `escalate_to_human` idempotent via its conditional write. The Lambda-side
+   check is the cheaper first move and does not block on the Policy pass.
+
+Until one of those lands, the cap is advisory. The ADR-001 eval confirms models
+*follow* it when told (S7, all candidates) — which is evidence about the models,
+not about the system being unable to over-remind.
+
 There is a subtlety worth surfacing: the thin slice is *testing whether the model
 makes the escalate-vs-remind call correctly*. If Cedar forced that call, the test
 would be meaningless. Leaving it to the model for the slice — then backstopping
