@@ -6,7 +6,6 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as sns from 'aws-cdk-lib/aws-sns';
-import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as agentcore from 'aws-cdk-lib/aws-bedrockagentcore';
 import { Construct } from 'constructs';
@@ -49,9 +48,20 @@ export class AgentStack extends cdk.Stack {
       topicName: `${config.resourcePrefix}-escalations`,
       masterKey: dataKey, // encrypt notifications at rest with the shared CMK
     });
-    this.escalationTopic.addSubscription(
-      new subscriptions.EmailSubscription(config.messaging.testRecipient),
-    );
+    // Explicit, stably-named subscription resource (not the auto-named
+    // addSubscription form) so its logical id survives refactors and it is a
+    // durable stack resource rather than a manual `aws sns subscribe`. Email
+    // subscriptions are created PENDING and require a one-time human confirmation
+    // click; an unconfirmed pending sub is auto-deleted by SNS after ~3 days --
+    // which is how the topic went bare after the Step-6 destroy/recreate churn.
+    // A no-click durable channel (SNS -> SQS, or SNS -> Lambda -> SES on a
+    // verified domain) is the later upgrade; for now email is the escalation
+    // channel.
+    new sns.Subscription(this, 'EscalationEmailSub', {
+      topic: this.escalationTopic,
+      protocol: sns.SubscriptionProtocol.EMAIL,
+      endpoint: config.messaging.testRecipient,
+    });
 
     // --- The one tool: escalate_to_human Lambda -----------------------------
     // Own the log group explicitly. With `useCdkManagedLogGroup` on, a Function
