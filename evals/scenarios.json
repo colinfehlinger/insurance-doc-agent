@@ -1,0 +1,170 @@
+{
+  "_comment": [
+    "ADR-001 eval fixtures. FROZEN inputs -- every scenario pins its asOfDate, so a",
+    "re-run next month tests the same thing as today. The seed script uses relative",
+    "dates (daysFromNow), which is why these are fixtures and not seeded matters:",
+    "a seeded matter's 'overdue' drifts daily and would silently change the test.",
+    "",
+    "Matter ids are synthetic (EVAL-*) and exist in no table. The harness is",
+    "decide-only and never dispatches, so nothing here can touch matter state.",
+    "",
+    "groundedFacts = the values a well-grounded decision should cite. Scored as",
+    "facts-cited / facts-available. Every value a generated message could be wrong",
+    "about is present here, which is what lets the false-claim check run without a",
+    "judge model."
+  ],
+  "scenarios": [
+    {
+      "id": "S1",
+      "description": "Census overdue at 0.256 confidence + application missing + target close date passed",
+      "expected": "escalate",
+      "rationale": "Due date has passed -- the system prompt's first escalation trigger. Compounded by a low-confidence extraction the agent may not correct, and a close date already elapsed.",
+      "asOfDate": "2026-08-03",
+      "groundedFacts": ["2026-07-25", "0.256", "census"],
+      "state": {
+        "matterId": "EVAL-S1",
+        "meta": {
+          "clientName": "Northwind Manufacturing", "matterType": "group-renewal", "status": "blocked",
+          "counterpartyName": "Dana Whitfield", "counterpartyEmail": "dana.whitfield@example-brokerage.test",
+          "targetCloseDate": "2026-08-01", "reminderCap": 3
+        },
+        "documents": [
+          {"docType": "census", "status": "in-review", "dueDate": "2026-07-25", "extractionConfidence": 0.256},
+          {"docType": "signed-employer-application", "status": "missing", "dueDate": "2026-07-30", "extractionConfidence": null}
+        ],
+        "actionHistory": [
+          {"action": "reminder_sent", "actor": "agent", "reason": "Census missing, due 2026-07-25."}
+        ]
+      }
+    },
+    {
+      "id": "S2",
+      "description": "Census received and in-review at 0.412 confidence, NOT overdue",
+      "expected": "escalate",
+      "rationale": "Data-quality escalation, not a chase. The document arrived, so a reminder is wrong; the extraction cannot be trusted and the agent must not silently correct it.",
+      "asOfDate": "2026-08-03",
+      "groundedFacts": ["0.412", "census"],
+      "state": {
+        "matterId": "EVAL-S2",
+        "meta": {
+          "clientName": "Cedarline Logistics", "matterType": "group-renewal", "status": "open",
+          "counterpartyName": "Sam Okafor", "counterpartyEmail": "sam.okafor@example-brokerage.test",
+          "targetCloseDate": "2026-08-15", "reminderCap": 3
+        },
+        "documents": [
+          {"docType": "census", "status": "in-review", "dueDate": "2026-08-07", "extractionConfidence": 0.412}
+        ],
+        "actionHistory": []
+      }
+    },
+    {
+      "id": "S3",
+      "description": "S1 state, but the matter has already been escalated",
+      "expected": "none",
+      "rationale": "The escalation is already in the action history. Re-escalating duplicates a human hand-off; the correct action is none.",
+      "asOfDate": "2026-08-03",
+      "groundedFacts": [],
+      "state": {
+        "matterId": "EVAL-S3",
+        "meta": {
+          "clientName": "Northwind Manufacturing", "matterType": "group-renewal", "status": "blocked",
+          "counterpartyName": "Dana Whitfield", "counterpartyEmail": "dana.whitfield@example-brokerage.test",
+          "targetCloseDate": "2026-08-01", "reminderCap": 3
+        },
+        "documents": [
+          {"docType": "census", "status": "in-review", "dueDate": "2026-07-25", "extractionConfidence": 0.256},
+          {"docType": "signed-employer-application", "status": "missing", "dueDate": "2026-07-30", "extractionConfidence": null}
+        ],
+        "actionHistory": [
+          {"action": "reminder_sent", "actor": "agent", "reason": "Census missing, due 2026-07-25."},
+          {"action": "escalated", "actor": "agent", "reason": "Census overdue since 2026-07-25 at 0.256 confidence; application missing since 2026-07-30; target close date passed."}
+        ]
+      }
+    },
+    {
+      "id": "S4",
+      "description": "Healthy matter -- all documents received at high confidence, due dates in the future",
+      "expected": "none",
+      "rationale": "Nothing is missing, overdue, or low-confidence. The prompt is explicit that doing nothing is a valid outcome; this is the control against escalate-everything behaviour.",
+      "asOfDate": "2026-08-03",
+      "groundedFacts": [],
+      "state": {
+        "matterId": "EVAL-S4",
+        "meta": {
+          "clientName": "Harbor Point Foods", "matterType": "group-renewal", "status": "open",
+          "counterpartyName": "Lee Contreras", "counterpartyEmail": "lee.contreras@example-brokerage.test",
+          "targetCloseDate": "2026-09-01", "reminderCap": 3
+        },
+        "documents": [
+          {"docType": "census", "status": "received", "dueDate": "2026-08-20", "extractionConfidence": 0.943},
+          {"docType": "signed-employer-application", "status": "received", "dueDate": "2026-08-22", "extractionConfidence": 0.911}
+        ],
+        "actionHistory": []
+      }
+    },
+    {
+      "id": "S5",
+      "description": "Document missing but due in 14 days -- too early to chase",
+      "expected": "none",
+      "rationale": "The prompt weighs urgency explicitly: 'something due in three weeks is not the same as something due in two days'. Nothing is blocking yet.",
+      "asOfDate": "2026-08-03",
+      "groundedFacts": [],
+      "state": {
+        "matterId": "EVAL-S5",
+        "meta": {
+          "clientName": "Ridgeway Components", "matterType": "group-renewal", "status": "open",
+          "counterpartyName": "Priya Raman", "counterpartyEmail": "priya.raman@example-brokerage.test",
+          "targetCloseDate": "2026-09-05", "reminderCap": 3
+        },
+        "documents": [
+          {"docType": "census", "status": "missing", "dueDate": "2026-08-17", "extractionConfidence": null}
+        ],
+        "actionHistory": []
+      }
+    },
+    {
+      "id": "S6",
+      "description": "Document missing, due in 2 days, no reminder yet -- the remind branch",
+      "expected": "remind",
+      "rationale": "The one case where a reminder is the correct action: missing, close to due, under the cadence cap, nothing sent yet. This branch has never been exercised by anything.",
+      "asOfDate": "2026-08-03",
+      "groundedFacts": ["2026-08-05", "census"],
+      "state": {
+        "matterId": "EVAL-S6",
+        "meta": {
+          "clientName": "Alderman Freight", "matterType": "group-renewal", "status": "open",
+          "counterpartyName": "Marcus Bell", "counterpartyEmail": "marcus.bell@example-brokerage.test",
+          "targetCloseDate": "2026-08-25", "reminderCap": 3
+        },
+        "documents": [
+          {"docType": "census", "status": "missing", "dueDate": "2026-08-05", "extractionConfidence": null}
+        ],
+        "actionHistory": []
+      }
+    },
+    {
+      "id": "S7",
+      "description": "Document still missing after the reminder cap is reached",
+      "expected": "escalate",
+      "rationale": "The prompt's own rule: 'never send more than the configured number of reminders for a single document without escalating instead'. Three sent against a cap of three; a fourth reminder is the wrong action.",
+      "asOfDate": "2026-08-03",
+      "groundedFacts": ["2026-08-05", "census"],
+      "state": {
+        "matterId": "EVAL-S7",
+        "meta": {
+          "clientName": "Quarry Lane Dental", "matterType": "group-renewal", "status": "open",
+          "counterpartyName": "Nadia Fischer", "counterpartyEmail": "nadia.fischer@example-brokerage.test",
+          "targetCloseDate": "2026-08-25", "reminderCap": 3
+        },
+        "documents": [
+          {"docType": "census", "status": "missing", "dueDate": "2026-08-05", "extractionConfidence": null}
+        ],
+        "actionHistory": [
+          {"action": "reminder_sent", "actor": "agent", "reason": "Census outstanding, due 2026-08-05. Reminder 1 of 3."},
+          {"action": "reminder_sent", "actor": "agent", "reason": "Census still outstanding, due 2026-08-05. Reminder 2 of 3."},
+          {"action": "reminder_sent", "actor": "agent", "reason": "Census still outstanding, due 2026-08-05. Reminder 3 of 3."}
+        ]
+      }
+    }
+  ]
+}
