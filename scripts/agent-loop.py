@@ -261,10 +261,24 @@ def decide_and_act(matter_id: str, clients: dict, cfg: dict) -> dict:
         name, args = tool_use["name"], dict(tool_use.get("input", {}))
         decision = {"action": "escalate" if name == "escalate_to_human" else name,
                     "toolName": name, "toolInput": args}
+        # DISPATCH GATE -- fail-safe by construction.
+        #
+        # This is deliberately `is True` on an opt-IN key, not falsiness on an
+        # opt-OUT one. The previous form was `elif cfg.get("dry_run")`, which
+        # meant a cfg that simply OMITTED the key returned None -> falsy -> fell
+        # through to dispatch. A missing key is exactly what a new caller, a
+        # partial refactor, or a Lambda handler assembling cfg from env is most
+        # likely to produce, and the failure mode was "sends real email".
+        #
+        # Inverted: dispatch happens only when a caller has explicitly said so.
+        # Anything else -- False, None, missing key, empty cfg -- cannot reach
+        # gateway_dispatch, which is the single call site in this module.
+        dispatch_enabled = cfg.get("dispatch") is True
         if name != "escalate_to_human":
             outcome = {"status": "error", "error": f"unexpected tool {name}"}
-        elif cfg.get("dry_run"):
-            outcome = {"status": "dry_run", "note": "tool NOT dispatched, audit NOT written"}
+        elif not dispatch_enabled:
+            outcome = {"status": "not_dispatched",
+                       "note": "decision recorded; dispatch not enabled for this run"}
         else:
             args.setdefault("matterId", matter_id)
             result = gateway_dispatch(cfg["gateway_url"], cfg["region"], clients["creds"], cfg["gateway_tool"], args)
@@ -314,7 +328,12 @@ def decide_and_act(matter_id: str, clients: dict, cfg: dict) -> dict:
         "modelRequestId": request_id,
         "gatewayCall": gateway_call,
     }
-    if not cfg.get("dry_run"):
+    # dry_run suppresses DISPATCH; write_audit controls PERSISTENCE. They are
+    # separate because the sweep's stage-1 rollout needs exactly the combination
+    # "decide and record, but send nothing" -- an audit trail of what the agent
+    # would have done, with zero outbound effect. Defaults keep this script's
+    # own --dry-run fully side-effect-free.
+    if cfg.get("write_audit", not cfg.get("dry_run")):
         write_audit(clients["table"], audit)
     return audit
 
@@ -357,6 +376,8 @@ def main() -> None:
         "gateway_tool": GATEWAY_TOOL, "system_text": system_text,
         "prompt_version": hashlib.sha256(system_text.encode()).hexdigest()[:12],
         "dry_run": dry_run,
+        "dispatch": not dry_run,   # explicit opt-in; see the DISPATCH GATE
+        "write_audit": not dry_run,
     }
     clients = {"table": table, "brt": brt, "creds": creds}
 
