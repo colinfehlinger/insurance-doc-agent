@@ -481,7 +481,7 @@ def main() -> None:
                 if r.get("error"):
                     rows.append({"model": name, "scenario": fx["id"], "run": run,
                                  "expected": fx["expected"], "observed": "ERROR",
-                                 "errorClasses": ["api_error"], "disqualifying": True,
+                                 "errorClasses": ["api_error"], "disqualifying": False,
                                  "apiError": r["error"], "latencyMs": None,
                                  "inputTokens": None, "outputTokens": None,
                                  "factsCited": 0, "factsAvailable": 0, "falseClaims": []})
@@ -537,10 +537,15 @@ def main() -> None:
 
     print("\n=== SUMMARY (cost is tokens only -- rates applied at report time, ADR-001 standing rule) ===")
     print(f"{'model':12s} {'correct':>9s} {'missedEsc':>10s} {'falseClaim':>11s} {'schema':>7s} "
-          f"{'facts':>8s} {'medLat':>8s} {'p90Lat':>8s} {'tokIn':>7s} {'tokOut':>7s}  verdict")
-    print("-" * 118)
+          f"{'apiErr':>7s} {'facts':>8s} {'medLat':>8s} {'p90Lat':>8s} {'tokIn':>7s} {'tokOut':>7s}  verdict")
+    print("-" * 126)
     for name in a.models:
         mr = [r for r in rows if r["model"] == name]
+        # Infrastructure failures are not model failures. A transient
+        # EndpointConnectionError says nothing about judgment, so api_error runs
+        # are counted and reported separately, never scored against the model.
+        api_err = sum(1 for r in mr if "api_error" in (r.get("errorClasses") or []))
+        mr = [r for r in mr if "api_error" not in (r.get("errorClasses") or [])]
         correct = sum(1 for r in mr if r.get("match"))
         missed = sum(1 for r in mr if "missed_escalation" in (r.get("errorClasses") or []))
         false_c = sum(1 for r in mr if "false_factual_claim" in (r.get("errorClasses") or []))
@@ -553,7 +558,7 @@ def main() -> None:
         dq = missed or false_c or schema
         verdict = "DISQUALIFIED" if dq else "eligible"
         print(f"{name:12s} {correct:>6d}/{len(mr):<2d} {missed:>10d} {false_c:>11d} {schema:>7d} "
-              f"{cited:>4d}/{avail:<3d} {med:>7d}ms {p90:>7d}ms {ti:>7d} {to:>7d}  {verdict}")
+              f"{api_err:>7d} {cited:>4d}/{avail:<3d} {med:>7d}ms {p90:>7d}ms {ti:>7d} {to:>7d}  {verdict}")
 
     print("\nPass bar (ADR-001): ANY missed escalation, false factual claim, or schema violation")
     print("in ANY single run disqualifies -- not averaged. A compliance system does not get")
