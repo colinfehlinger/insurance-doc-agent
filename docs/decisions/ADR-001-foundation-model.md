@@ -271,7 +271,8 @@ system they are not equivalent:
 | Error class | Severity | Why |
 |---|---|---|
 | **Missed escalation** (expected `escalate`, got `none`/`remind`) | **Disqualifying** | The failure that reaches a client |
-| **False factual claim in dispatched content** | **Disqualifying** | An outbound message asserting something untrue about the matter — see below |
+| **False factual claim — directional** (wrong direction, wrong status, or a wrong due date) | **Disqualifying** | The reader **acts wrong** — see the tier split below |
+| **False factual claim — magnitude** (right direction and status, wrong count) | **Tracked, flagged, not disqualifying alone** | The reader still acts correctly; a *pattern* re-escalates it |
 | Spurious escalation (expected `none`, got `escalate`) | Moderate | Noise; erodes trust in the review queue |
 | Over-caution (expected `remind`, got `escalate`) | Minor | Wrong, but safe |
 | **Schema violation** | Separate axis | Observed in practice — the model invented an `urgency` field when no `toolConfig` was present |
@@ -301,6 +302,42 @@ project: the system prompt's *"never imply a document was received when it was
 not"* has a sibling it did not state — **never tell a counterparty a document is
 due when it is already late.** A model can satisfy the letter of the tool
 contract and still violate that.
+
+#### Tier split within false claims (added 2026-08-04)
+
+The original class treated every factual error alike. A later run showed that is
+too blunt. **The dividing line is whether the error changes what the reader
+does.**
+
+| Tier | Examples | Disposition |
+|---|---|---|
+| **Directional** | *"due in 2 days"* for a document 4 days overdue; *"the census is overdue"* when it is 4 days away; *"we received it"* when status is `missing`; *"submit by <wrong date>"* | **Disqualifying.** The recipient acts on a false premise — chases the wrong deadline, relaxes on a late document, or stops chasing one that never arrived. |
+| **Magnitude** | *"8 days overdue"* when it is 9 | **Tracked and flagged, not disqualifying on its own.** Direction and status are right, so the human still escalates, still treats it as late, still acts correctly. |
+
+A wrong *due date* sits in the directional tier despite looking numeric: a broker
+told to submit by the wrong date acts on the wrong deadline, which is the same
+failure shape as an inversion.
+
+**Magnitude errors are still logged per occurrence, and a pattern re-escalates
+them.** One off-by-one is noise in a system whose output a human reads and acts
+on. Repeated arithmetic drift across runs is a different claim — it says the
+model cannot reliably compute the interval it is reasoning about, which
+undermines the date reasoning the whole escalate/remind decision rests on. The
+tier is a threshold on a single occurrence, not a permanent exemption.
+
+#### Reclassification of the 2026-08-04 regression run
+
+Under this split, Sonnet 4.6's S1 result — *"Census (due 2026-07-25, now 8 days
+overdue)"* when the interval is 9 days — is **flagged, not disqualifying.** Its
+direction, status, and chosen action were all correct; only the count was off by
+one, and the human reading that escalation still acts identically. Both eligible
+models therefore carry **zero disqualifying classes** in that run.
+
+It stays an **open question, not a closed one**: this is n = 1 on that specific
+error, and Sonnet produced zero false claims on the same fixture in the preceding
+run. Something to watch across future regression runs, not yet a pattern — and
+precisely the thing the per-occurrence log exists to accumulate. Haiku 4.5 was
+correct on this arithmetic in both runs.
 
 **Pass bar — explicit, and deliberately unforgiving.** A candidate is
 disqualified if **any single run of any escalate-expected scenario fails to

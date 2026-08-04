@@ -154,7 +154,16 @@ def verify_claims(text: str, fixture: dict, args: dict) -> list[str]:
     due = doc["dueDate"]
     delta = (date.fromisoformat(due) - as_of).days  # < 0 == overdue
 
+    # Each finding is tagged with its tier (ADR-001, 2026-08-04):
+    #   "directional" -- wrong direction, wrong status, or a wrong due date.
+    #                    Causes the reader to ACT wrong. Disqualifying.
+    #   "magnitude"   -- right direction and status, wrong count. The reader
+    #                    still acts correctly. Flagged and tracked, not
+    #                    disqualifying on its own.
+    #
     # 1. A date asserted as a due date must be SOME document's real due date.
+    #    Directional: a broker told "submit by <wrong date>" acts on the wrong
+    #    deadline, which is the same failure shape as an inversion.
     #    Checked against every document in the matter, not just the subject one:
     #    models routinely discuss several documents in a single message, and
     #    attributing every date found to one subject flagged correct text as
@@ -164,34 +173,32 @@ def verify_claims(text: str, fixture: dict, args: dict) -> list[str]:
     all_due.add(fixture["state"]["meta"].get("targetCloseDate"))  # the matter is "due" then too
     for m in DUE_DATE_CLAIM.finditer(text):
         if m.group(1) not in all_due:
-            problems.append(f"asserts a due date of {m.group(1)}; no document in this matter is due then")
+            problems.append(("directional", f"asserts a due date of {m.group(1)}; no document in this matter is due then"))
 
     # 2. Direction inversion -- the Nova Lite failure class.
     fwd_n = _asserts(FORWARD_N, text)
     if (fwd_n or _asserts(FORWARD_SOFT, text)) and delta < 0:
-        problems.append(
+        problems.append(("directional",
             f"claims '{doc['docType']}' is still upcoming, but it was due {due} "
-            f"and is {abs(delta)} days OVERDUE as of {fixture['asOfDate']}"
-        )
+            f"and is {abs(delta)} days OVERDUE as of {fixture['asOfDate']}"))
     bwd_n = _asserts(BACKWARD_N, text)
     if (bwd_n or _asserts(BACKWARD_SOFT, text)) and delta > 0:
-        problems.append(
+        problems.append(("directional",
             f"claims '{doc['docType']}' is overdue, but it is not due until {due} "
-            f"({delta} days away as of {fixture['asOfDate']})"
-        )
+            f"({delta} days away as of {fixture['asOfDate']})"))
 
     # 3. Day-count magnitude, only when the direction is already right.
     if fwd_n and delta > 0 and int(fwd_n.group(1)) != delta:
-        problems.append(f"says due in {fwd_n.group(1)} days; actual is {delta}")
+        problems.append(("magnitude", f"says due in {fwd_n.group(1)} days; actual is {delta} (direction correct)"))
     if bwd_n and delta < 0 and int(bwd_n.group(1)) != abs(delta):
-        problems.append(f"says {bwd_n.group(1)} days overdue; actual is {abs(delta)}")
+        problems.append(("magnitude", f"says {bwd_n.group(1)} days overdue; actual is {abs(delta)} (direction correct)"))
 
     # 4. Status assertions (negation-aware -- "no document received" is not a
     #    claim that one was).
     if _asserts(CLAIM_RECEIVED, text) and doc.get("status") == "missing":
-        problems.append(f"implies '{doc['docType']}' was received; status is missing")
+        problems.append(("directional", f"implies '{doc['docType']}' was received; status is missing"))
     if _asserts(CLAIM_MISSING, text) and doc.get("status") == "received":
-        problems.append(f"claims '{doc['docType']}' is outstanding; status is received")
+        problems.append(("directional", f"claims '{doc['docType']}' is outstanding; status is received"))
     return problems
 
 
@@ -209,7 +216,8 @@ def score_facts(text: str, facts: list[str]) -> tuple[int, int]:
     return sum(1 for f in facts if f.lower() in low), len(facts)
 
 
-def classify_errors(expected, observed: str, false_claims: list, schema_bad: bool) -> list[str]:
+def classify_errors(expected, observed: str, false_claims: list, schema_bad: bool,
+                    magnitude: list | None = None) -> list[str]:
     """Return EVERY applicable error class, not the first one that matches.
 
     The original returned a single class and checked false_factual_claim first,
@@ -226,7 +234,13 @@ def classify_errors(expected, observed: str, false_claims: list, schema_bad: boo
     if "escalate" in ok and observed not in ok:
         errs.append("missed_escalation")       # disqualifying
     if false_claims:
-        errs.append("false_factual_claim")     # disqualifying
+        errs.append("false_factual_claim")     # disqualifying (directional/status)
+    if magnitude:
+        # Right direction and status, wrong count. The reader still acts
+        # correctly, so this is tracked rather than disqualifying -- but it is
+        # logged per occurrence, because a PATTERN across runs is its own
+        # finding and would justify escalating the tier (ADR-001).
+        errs.append("magnitude_error")         # tracked, NOT disqualifying
     if schema_bad:
         errs.append("schema_violation")        # disqualifying
     if observed not in ok:
@@ -253,16 +267,19 @@ def score_run(fixture: dict, tool: str | None, args: dict, text: str) -> dict:
     # is never sent anywhere. Scoring narration as dispatched content accused
     # models of falsehoods in text they were only reasoning with.
     dispatched = " ".join(filter(None, [(args or {}).get("message"), (args or {}).get("reason")]))
-    false_claims = verify_claims(dispatched, fixture, args) if dispatched else []
+    findings = verify_claims(dispatched, fixture, args) if dispatched else []
+    false_claims = [m for kind, m in findings if kind == "directional"]
+    magnitude = [m for kind, m in findings if kind == "magnitude"]
     # Grounding falls back to narration when no tool was called, since a
     # "do nothing and say why" decision has no dispatched content but must still
     # be justified.
     cited, avail = score_facts(dispatched or text, fixture.get("groundedFacts", []))
-    errs = classify_errors(expected, observed, false_claims, bool(missing or extra))
+    errs = classify_errors(expected, observed, false_claims, bool(missing or extra), magnitude)
     return {
         "observed": observed, "match": observed in ok,
         "schemaMissing": sorted(missing), "schemaExtra": sorted(extra),
-        "falseClaims": false_claims, "factsCited": cited, "factsAvailable": avail,
+        "falseClaims": false_claims, "magnitudeErrors": magnitude,
+        "factsCited": cited, "factsAvailable": avail,
         "errorClasses": errs, "disqualifying": bool(DISQUALIFYING & set(errs)),
     }
 
@@ -506,6 +523,8 @@ def main() -> None:
                 print(f"  {name:11s} {fx['id']} run{run}: {s['observed']:8s} (exp {exp_s:12s}) {flag}")
                 for p in s["falseClaims"]:
                     print(f"      FALSE CLAIM: {p}")
+                for p in s["magnitudeErrors"]:
+                    print(f"      magnitude (tracked, not disqualifying): {p}")
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
     stamp = time.strftime("%Y%m%dT%H%M%S")
@@ -537,8 +556,8 @@ def main() -> None:
 
     print("\n=== SUMMARY (cost is tokens only -- rates applied at report time, ADR-001 standing rule) ===")
     print(f"{'model':12s} {'correct':>9s} {'missedEsc':>10s} {'falseClaim':>11s} {'schema':>7s} "
-          f"{'apiErr':>7s} {'facts':>8s} {'medLat':>8s} {'p90Lat':>8s} {'tokIn':>7s} {'tokOut':>7s}  verdict")
-    print("-" * 126)
+          f"{'magErr':>7s} {'apiErr':>7s} {'facts':>8s} {'medLat':>8s} {'p90Lat':>8s} {'tokIn':>7s} {'tokOut':>7s}  verdict")
+    print("-" * 134)
     for name in a.models:
         mr = [r for r in rows if r["model"] == name]
         # Infrastructure failures are not model failures. A transient
@@ -550,6 +569,7 @@ def main() -> None:
         missed = sum(1 for r in mr if "missed_escalation" in (r.get("errorClasses") or []))
         false_c = sum(1 for r in mr if "false_factual_claim" in (r.get("errorClasses") or []))
         schema = sum(1 for r in mr if "schema_violation" in (r.get("errorClasses") or []))
+        magn = sum(1 for r in mr if "magnitude_error" in (r.get("errorClasses") or []))
         cited = sum(r.get("factsCited", 0) for r in mr); avail = sum(r.get("factsAvailable", 0) for r in mr)
         lats = sorted(r["latencyMs"] for r in mr if r.get("latencyMs"))
         med = int(statistics.median(lats)) if lats else 0
@@ -558,7 +578,7 @@ def main() -> None:
         dq = missed or false_c or schema
         verdict = "DISQUALIFIED" if dq else "eligible"
         print(f"{name:12s} {correct:>6d}/{len(mr):<2d} {missed:>10d} {false_c:>11d} {schema:>7d} "
-              f"{api_err:>7d} {cited:>4d}/{avail:<3d} {med:>7d}ms {p90:>7d}ms {ti:>7d} {to:>7d}  {verdict}")
+              f"{magn:>7d} {api_err:>7d} {cited:>4d}/{avail:<3d} {med:>7d}ms {p90:>7d}ms {ti:>7d} {to:>7d}  {verdict}")
 
     print("\nPass bar (ADR-001): ANY missed escalation, false factual claim, or schema violation")
     print("in ANY single run disqualifies -- not averaged. A compliance system does not get")
