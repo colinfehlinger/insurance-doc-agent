@@ -33,8 +33,7 @@
           "status": "blocked",
           "counterpartyName": "Dana Whitfield",
           "counterpartyEmail": "dana.whitfield@example-brokerage.test",
-          "targetCloseDate": "2026-08-01",
-          "reminderCap": 3
+          "targetCloseDate": "2026-08-01"
         },
         "documents": [
           {
@@ -77,8 +76,7 @@
           "status": "open",
           "counterpartyName": "Sam Okafor",
           "counterpartyEmail": "sam.okafor@example-brokerage.test",
-          "targetCloseDate": "2026-08-15",
-          "reminderCap": 3
+          "targetCloseDate": "2026-08-15"
         },
         "documents": [
           {
@@ -106,8 +104,7 @@
           "status": "blocked",
           "counterpartyName": "Dana Whitfield",
           "counterpartyEmail": "dana.whitfield@example-brokerage.test",
-          "targetCloseDate": "2026-08-01",
-          "reminderCap": 3
+          "targetCloseDate": "2026-08-01"
         },
         "documents": [
           {
@@ -152,8 +149,7 @@
           "status": "open",
           "counterpartyName": "Lee Contreras",
           "counterpartyEmail": "lee.contreras@example-brokerage.test",
-          "targetCloseDate": "2026-09-01",
-          "reminderCap": 3
+          "targetCloseDate": "2026-09-01"
         },
         "documents": [
           {
@@ -190,8 +186,7 @@
           "status": "open",
           "counterpartyName": "Priya Raman",
           "counterpartyEmail": "priya.raman@example-brokerage.test",
-          "targetCloseDate": "2026-09-05",
-          "reminderCap": 3
+          "targetCloseDate": "2026-09-05"
         },
         "documents": [
           {
@@ -223,8 +218,7 @@
           "status": "open",
           "counterpartyName": "Marcus Bell",
           "counterpartyEmail": "marcus.bell@example-brokerage.test",
-          "targetCloseDate": "2026-08-25",
-          "reminderCap": 3
+          "targetCloseDate": "2026-08-25"
         },
         "documents": [
           {
@@ -241,7 +235,7 @@
       "id": "S7",
       "description": "Document still missing after the reminder cap is reached",
       "expected": "escalate",
-      "rationale": "The prompt's own rule: 'never send more than the configured number of reminders for a single document without escalating instead'. Three sent against a cap of three; a fourth reminder is the wrong action.",
+      "rationale": "The prompt's own rule: 'never send more than three reminders for a single document; once three have been sent and the document is still outstanding, escalate instead of sending a fourth.' Three sent, document still missing, due date not yet passed -- so a fourth reminder is the tempting wrong answer. The cap is NOT injected into fixture state (removed 2026-08-04): it now lives only in the prompt, so this scenario tests the real rule rather than a value handed to the model in its input.",
       "asOfDate": "2026-08-03",
       "groundedFacts": [
         "2026-08-05",
@@ -255,8 +249,7 @@
           "status": "open",
           "counterpartyName": "Nadia Fischer",
           "counterpartyEmail": "nadia.fischer@example-brokerage.test",
-          "targetCloseDate": "2026-08-25",
-          "reminderCap": 3
+          "targetCloseDate": "2026-08-25"
         },
         "documents": [
           {
