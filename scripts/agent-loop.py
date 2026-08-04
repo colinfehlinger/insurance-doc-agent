@@ -51,7 +51,18 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 TABLE = os.environ.get("MATTER_TABLE", "ida-dev-matters")
-MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-sonnet-4-6")
+# Production model: Claude Haiku 4.5, selected by the ADR-001 eval (2026-08-04).
+# It matched Sonnet 4.6 action-for-action on all 21 scored runs across 7 frozen
+# scenarios -- zero missed escalations, zero false claims in dispatched content,
+# zero schema violations -- at roughly half the latency (3.6s vs 7.0s median).
+#
+# FALLBACK / REFERENCE: Claude Sonnet 4.6, `us.anthropic.claude-sonnet-4-6`.
+# It is the other model that cleared the ADR-001 bar, so if Haiku regresses in
+# production the switch is one line -- no redeploy, no code change:
+#     MODEL_ID=us.anthropic.claude-sonnet-4-6 python scripts/agent-loop.py <matter>
+# Both Nova candidates were DISQUALIFIED at the escalation boundary; do not
+# substitute one here on cost grounds without re-running the eval.
+MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
 GATEWAY_NAME = os.environ.get("GATEWAY_NAME", "ida-dev-gateway")
 GATEWAY_TOOL = os.environ.get("GATEWAY_TOOL", "escalate-to-human___escalate_to_human")
 PROMPT_PATH = os.path.join(os.path.dirname(__file__), "..", "agent", "system-prompt.md")
