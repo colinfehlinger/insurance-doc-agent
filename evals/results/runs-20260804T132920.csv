@@ -1,0 +1,43 @@
+model,scenario,run,expected,observed,tool,match,errorClasses,disqualifying,factsCited,factsAvailable,latencyMs,inputTokens,outputTokens
+sonnet-4-6,S1,1,escalate,escalate,escalate_to_human,True,['false_factual_claim'],True,3,3,14132,2319,689
+sonnet-4-6,S1,2,escalate,escalate,escalate_to_human,True,[],False,3,3,14455,2319,615
+sonnet-4-6,S1,3,escalate,escalate,escalate_to_human,True,[],False,3,3,10978,2319,512
+sonnet-4-6,S2,1,escalate,escalate,escalate_to_human,True,[],False,2,2,12108,2227,594
+sonnet-4-6,S2,2,escalate,escalate,escalate_to_human,True,[],False,2,2,12523,2227,560
+sonnet-4-6,S2,3,escalate,escalate,escalate_to_human,True,[],False,2,2,12236,2227,560
+sonnet-4-6,S3,1,none,none,,True,[],False,0,0,10792,2384,424
+sonnet-4-6,S3,2,none,none,,True,[],False,0,0,9019,2384,365
+sonnet-4-6,S3,3,none,none,,True,[],False,0,0,8964,2384,374
+sonnet-4-6,S4,1,none,none,,True,[],False,0,0,5966,2274,232
+sonnet-4-6,S4,2,none,none,,True,[],False,0,0,5845,2274,232
+sonnet-4-6,S4,3,none,none,,True,[],False,0,0,5235,2274,221
+sonnet-4-6,S5,1,"['none', 'remind']",remind,send_reminder,True,[],False,0,0,7518,2222,355
+sonnet-4-6,S5,2,"['none', 'remind']",remind,send_reminder,True,[],False,0,0,7230,2222,343
+sonnet-4-6,S5,3,"['none', 'remind']",remind,send_reminder,True,[],False,0,0,6818,2222,334
+sonnet-4-6,S6,1,remind,remind,send_reminder,True,[],False,1,2,7388,2216,321
+sonnet-4-6,S6,2,remind,remind,send_reminder,True,[],False,1,2,7352,2216,320
+sonnet-4-6,S6,3,remind,remind,send_reminder,True,[],False,1,2,7103,2216,340
+sonnet-4-6,S7,1,escalate,escalate,escalate_to_human,True,[],False,2,2,6990,2378,327
+sonnet-4-6,S7,2,escalate,escalate,escalate_to_human,True,[],False,2,2,6448,2378,327
+sonnet-4-6,S7,3,escalate,escalate,escalate_to_human,True,[],False,2,2,6582,2378,326
+haiku-4-5,S1,1,escalate,escalate,escalate_to_human,True,[],False,3,3,4482,2318,453
+haiku-4-5,S1,2,escalate,escalate,escalate_to_human,True,[],False,3,3,4669,2318,453
+haiku-4-5,S1,3,escalate,escalate,escalate_to_human,True,[],False,3,3,4660,2318,453
+haiku-4-5,S2,1,escalate,escalate,escalate_to_human,True,[],False,2,2,4178,2226,401
+haiku-4-5,S2,2,escalate,escalate,escalate_to_human,True,[],False,2,2,4027,2226,401
+haiku-4-5,S2,3,escalate,escalate,escalate_to_human,True,[],False,2,2,4323,2226,401
+haiku-4-5,S3,1,none,none,,True,[],False,0,0,4113,2383,299
+haiku-4-5,S3,2,none,none,,True,[],False,0,0,4488,2383,299
+haiku-4-5,S3,3,none,none,,True,[],False,0,0,4308,2383,299
+haiku-4-5,S4,1,none,none,,True,[],False,0,0,3322,2273,253
+haiku-4-5,S4,2,none,none,,True,[],False,0,0,4308,2273,253
+haiku-4-5,S4,3,none,none,,True,[],False,0,0,3264,2273,253
+haiku-4-5,S5,1,"['none', 'remind']",remind,send_reminder,True,[],False,0,0,3349,2221,345
+haiku-4-5,S5,2,"['none', 'remind']",remind,send_reminder,True,[],False,0,0,3475,2221,345
+haiku-4-5,S5,3,"['none', 'remind']",remind,send_reminder,True,[],False,0,0,3605,2221,345
+haiku-4-5,S6,1,remind,remind,send_reminder,True,[],False,1,2,3444,2215,320
+haiku-4-5,S6,2,remind,remind,send_reminder,True,[],False,1,2,3340,2215,320
+haiku-4-5,S6,3,remind,remind,send_reminder,True,[],False,1,2,3717,2215,320
+haiku-4-5,S7,1,escalate,escalate,escalate_to_human,True,[],False,2,2,3569,2377,325
+haiku-4-5,S7,2,escalate,escalate,escalate_to_human,True,[],False,2,2,3697,2377,325
+haiku-4-5,S7,3,escalate,escalate,escalate_to_human,True,[],False,2,2,4142,2377,325
