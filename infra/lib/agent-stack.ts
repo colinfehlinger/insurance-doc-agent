@@ -1,4 +1,5 @@
 import * as path from 'path';
+import * as fs from 'fs';
 import * as cdk from 'aws-cdk-lib';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as kms from 'aws-cdk-lib/aws-kms';
@@ -181,6 +182,104 @@ export class AgentStack extends cdk.Stack {
     // builds from the escalate schema, dispatching tool_use through THIS
     // Gateway (SigV4/MCP). The Gateway, its target, the tool Lambda, and SNS
     // all stay -- only the Harness (and its execution role) are gone.
+    // --- Scheduled sweep Lambda ---------------------------------------------
+    // Bundled at SYNTH time, without Docker (ADR-004 keeps synth container-free).
+    // The asset is assembled by copying the `agent/` package -- decision core,
+    // sweep logic, and the system prompt -- next to the handler, so that
+    // `import agent.core.sweep` and the package-relative prompt path resolve
+    // identically in the Lambda and on a laptop. `_bundle/` is generated and
+    // gitignored; agent/system-prompt.md keeps exactly one source of truth.
+    const sweepSrc = path.join(__dirname, '..', 'lambdas', 'sweep');
+    const bundleDir = path.join(sweepSrc, '_bundle');
+    const agentSrc = path.join(__dirname, '..', '..', 'agent');
+    fs.rmSync(bundleDir, { recursive: true, force: true });
+    fs.mkdirSync(path.join(bundleDir, 'agent'), { recursive: true });
+    fs.copyFileSync(path.join(sweepSrc, 'index.py'), path.join(bundleDir, 'index.py'));
+    fs.copyFileSync(path.join(agentSrc, '__init__.py'), path.join(bundleDir, 'agent', '__init__.py'));
+    fs.copyFileSync(path.join(agentSrc, 'system-prompt.md'), path.join(bundleDir, 'agent', 'system-prompt.md'));
+    fs.cpSync(path.join(agentSrc, 'core'), path.join(bundleDir, 'agent', 'core'), {
+      recursive: true,
+      filter: (src) => !src.includes('__pycache__'),
+    });
+
+    const sweepLogGroup = new logs.LogGroup(this, 'SweepFnLogGroup', {
+      logGroupName: `/aws/lambda/${config.resourcePrefix}-sweep`,
+      retention: logs.RetentionDays.TWO_WEEKS,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    const sweepFn = new lambda.Function(this, 'SweepFn', {
+      functionName: `${config.resourcePrefix}-sweep`,
+      runtime: lambda.Runtime.PYTHON_3_13,
+      handler: 'index.handler',
+      code: lambda.Code.fromAsset(bundleDir),
+      // One Bedrock call per matter, serially, up to the cap. 15 min is the
+      // ceiling; the MAX_MATTERS_PER_RUN cap is what actually bounds runtime.
+      timeout: cdk.Duration.minutes(15),
+      memorySize: 512,
+      logGroup: sweepLogGroup,
+      environment: {
+        MATTER_TABLE: matterTable.tableName,
+        // Synth-time, from the gateway resource: no runtime lookup, no
+        // bedrock-agentcore-control permission, no cold-start API call.
+        GATEWAY_URL: gateway.attrGatewayUrl,
+        GATEWAY_TOOL: 'escalate-to-human___escalate_to_human',
+        // SAFE BY DEFAULT. Only the exact string "false" enables dispatch, so a
+        // missing or malformed value dry-runs. Stage 2 flips this deliberately.
+        DRY_RUN: 'true',
+        MAX_MATTERS_PER_RUN: '50',
+        MAX_ESCALATIONS_PER_RUN: '10',
+        LOOKAHEAD_DAYS: '7',
+      },
+    });
+
+    // --- Sweep IAM: least privilege, and the absences are deliberate ---------
+    // Query the matter table and GSI1 (candidate selection, the pre-filter, and
+    // per-matter state reads).
+    sweepFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:Query'],
+      resources: [matterTable.tableArn, `${matterTable.tableArn}/index/GSI1`],
+    }));
+    // Write AUDIT# decision rows, including the error rows that keep a failing
+    // matter visible.
+    //
+    // LIMITATION, recorded rather than papered over: DynamoDB IAM cannot scope
+    // PutItem by SORT KEY prefix -- dynamodb:LeadingKeys conditions apply to the
+    // partition key only. So "the sweep may write AUDIT# rows and nothing else"
+    // is enforced by code, not by this role: an advisory guard, not a structural
+    // one (docs/step-6-agent-design.md, probabilistic-guard principle).
+    sweepFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:PutItem'],
+      resources: [matterTable.tableArn],
+    }));
+    // The table is CMK-encrypted, so the caller needs key access through DDB.
+    dataKey.grant(sweepFn, 'kms:Decrypt', 'kms:GenerateDataKey');
+    // Invoke the production model. Sonnet 4.6 is included because it is the
+    // documented fallback (ADR-001) and switching to it is an env-var change.
+    sweepFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['bedrock:InvokeModel'],
+      resources: [
+        `arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-4-5*`,
+        `arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-6*`,
+        `arn:aws:bedrock:*:${this.account}:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0`,
+        `arn:aws:bedrock:*:${this.account}:inference-profile/us.anthropic.claude-sonnet-4-6`,
+      ],
+    }));
+    // Dispatch through the Gateway -- the governed surface that holds the
+    // credentials to invoke the tool Lambda and logs every call.
+    sweepFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['bedrock-agentcore:InvokeGateway'],
+      resources: [gateway.attrGatewayArn, `${gateway.attrGatewayArn}/*`],
+    }));
+    // DELIBERATELY ABSENT -- asserted by scripts/verify-sweep-iam.py against the
+    // synthesized template, so the design doc and the deployed role cannot drift:
+    //   lambda:InvokeFunction        the GATEWAY invokes the escalate Lambda
+    //   sns:Publish                  the escalate Lambda notifies, never the sweep
+    //   dynamodb:UpdateItem/DeleteItem/BatchWriteItem  never mutates matter state
+    //   dynamodb:Scan                candidate selection is Query-only
+    //   bedrock-agentcore-control:*  eliminated by the GATEWAY_URL env var
+
+    new cdk.CfnOutput(this, 'SweepFnName', { value: sweepFn.functionName });
+
     // --- SSM contract + messaging config ------------------------------------
     // Replaces the probe's runtime-arn placeholder with the real harness ARN.
 

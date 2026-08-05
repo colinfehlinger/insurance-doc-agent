@@ -53,3 +53,5 @@ Thumbs.db
 # Local scratch
 tmp/
 *.log
+_bundle/
+infra/lambdas/sweep/_bundle/

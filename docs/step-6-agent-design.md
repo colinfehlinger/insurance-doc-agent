@@ -213,6 +213,31 @@ The heuristic: **when a check protects something irreversible, ask what happens
 if the model is wrong, and then what happens if the config is wrong.** If either
 answer is "it acts anyway", the guard is advisory.
 
+#### A guard that cannot be made structural, named as such (2026-08-04)
+
+The sweep Lambda's role grants `dynamodb:PutItem` on the matter table so it can
+write `AUDIT#` decision rows, including the error rows that keep a failing matter
+visible. It should only ever write those. **That constraint cannot be expressed
+in IAM:** DynamoDB's `dynamodb:LeadingKeys` condition scopes by *partition* key,
+and there is no sort-key-prefix equivalent, so "may write `AUDIT#` rows and
+nothing else" is enforced by the sweep's code and by nothing else.
+
+By the principle above, that makes it **advisory, not structural** — the role
+would permit the sweep to overwrite a `META` or `DOC#` row if a future change
+told it to. Recorded here rather than left implicit, because the honest version
+of a least-privilege claim includes the privilege that could not be narrowed.
+
+What *is* structural alongside it: the role carries no `sns:Publish`, no
+`lambda:InvokeFunction`, no `UpdateItem`/`DeleteItem`/`BatchWriteItem`, and no
+`Scan` — asserted against the synthesized CloudFormation template by
+`scripts/verify-sweep-iam.py`, which is itself self-tested against an injected
+forbidden action so it is known capable of failing. The design doc and the
+deployed role cannot drift apart silently.
+
+If the `PutItem` breadth ever justifies the cost, the fix is a separate audit
+table with its own role, not a cleverer IAM condition — the condition does not
+exist.
+
 ### TRACKED GAP — the reminder cap is prompt-only and unvalidated (2026-08-04)
 
 Found while authoring the ADR-001 eval's S7 scenario: `system-prompt.md` stated
