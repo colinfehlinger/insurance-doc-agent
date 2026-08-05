@@ -132,6 +132,46 @@ recipient, over-cadence, reminding when it should escalate). So: **thin slice =
 prompt only; tool-expansion pass = add the Cedar policy set above at the
 Gateway.** Stated plainly so it is a scheduled addition, not an omission.
 
+### PRINCIPLE — a test is trustworthy only once shown to fail on a known-bad input (2026-08-04)
+
+Written down after the same mistake three times in one week. A test that has
+never been observed to fail is not evidence that the thing under test works; it
+is evidence that the test ran.
+
+**Incident 1 — the scorer's self-test.** Three cases, all passing, and it shipped
+five bugs. Every case happened to contain no negation and no citation of
+`asOfDate`, which were precisely the two constructs the detector mishandled. The
+suite confirmed what its author already believed and had no case it was capable
+of failing.
+
+**Incident 2 — the first matrix run.** The scorer reported all four models
+disqualified. That result was implausible enough to investigate, and the
+instrument turned out to be wrong. Had it disqualified only the Nova models —
+the answer we half-expected — the same five bugs would have been recorded as
+findings about the models. *A broken instrument that returns the expected answer
+is undetectable.*
+
+**Incident 3 — the ordering-fix test.** Verifying that filtering before capping
+fixes throughput, the fake table's condition-parsing was broken, so `should_skip`
+returned `None` for every matter and both orderings produced identical output.
+The test "passed" for entirely the wrong reason; only an explicit assertion on
+the expected value caught it, not reading the output, which looked plausible.
+
+**The practice:**
+
+1. **Every detector needs a known-positive** — an input it must flag. If it
+   cannot be shown catching the failure that motivated it, it is decoration.
+2. **Every fix needs the pre-fix behaviour asserted too.** The ordering test is
+   trustworthy because it demonstrates *both* that the old order yields 0 of 5
+   and the new order yields 5 of 5. Verifying only the new behaviour cannot
+   distinguish "the fix works" from "the test is inert".
+3. **Assert on values, never eyeball output.** All three incidents produced
+   output that looked reasonable. Two were caught by assertions; the one caught
+   by reading was caught only because the number was absurd.
+4. **When a result matches expectations, that is not confirmation.** It is the
+   condition under which a broken instrument is invisible. Suspicion is cheapest
+   when the answer is convenient.
+
 ### PRINCIPLE — a probabilistic guard is not a structural guarantee (2026-08-04)
 
 The generalizable lesson from the Step-6 → sweep arc, stated once here because it
