@@ -9,6 +9,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as agentcore from 'aws-cdk-lib/aws-bedrockagentcore';
+import * as scheduler from 'aws-cdk-lib/aws-scheduler';
 import { Construct } from 'constructs';
 import { IdaStackPropsBase } from './config';
 
@@ -277,6 +278,44 @@ export class AgentStack extends cdk.Stack {
     //   dynamodb:UpdateItem/DeleteItem/BatchWriteItem  never mutates matter state
     //   dynamodb:Scan                candidate selection is Query-only
     //   bedrock-agentcore-control:*  eliminated by the GATEWAY_URL env var
+
+    // --- Day 2: the schedule ------------------------------------------------
+    // The first thing in this system that triggers itself with no human in the
+    // loop. It runs with DRY_RUN=true (the function's own env default), so a
+    // firing decides and records and dispatches nothing.
+    //
+    // EventBridge SCHEDULER, not an events.Rule, specifically for the timezone.
+    // A Rule's cron is UTC-only, so "07:00 local" would have to be written as a
+    // fixed UTC hour and would silently drift an hour across the DST boundary --
+    // 07:00 EDT is 11:00 UTC, 07:00 EST is 12:00 UTC. Scheduler takes an IANA
+    // zone and holds 07:00 local year-round. Given this project has already lost
+    // time to a UTC/local date confusion, the schedule states its intent rather
+    // than encoding an offset that is only correct half the year.
+    const schedulerRole = new iam.Role(this, 'SweepScheduleRole', {
+      assumedBy: new iam.ServicePrincipal('scheduler.amazonaws.com'),
+      description: 'EventBridge Scheduler role -- invokes the sweep Lambda on the daily schedule.',
+    });
+    sweepFn.grantInvoke(schedulerRole);
+
+    new scheduler.CfnSchedule(this, 'SweepDailySchedule', {
+      name: `${config.resourcePrefix}-sweep-daily`,
+      description: 'Daily document-chase sweep (Day 2: cron-driven dry run).',
+      state: 'ENABLED',
+      flexibleTimeWindow: { mode: 'OFF' },  // fire at the stated minute, not within a window
+      scheduleExpression: 'cron(0 7 * * ? *)',
+      scheduleExpressionTimezone: 'America/New_York',
+      target: {
+        arn: sweepFn.functionArn,
+        roleArn: schedulerRole.roleArn,
+        // The payload is the trigger's fingerprint. `invokedBy` is what lets a
+        // reader tell a scheduled firing from a hand-invoke after the fact --
+        // a RequestId and a timestamp cannot. dryRun is stated explicitly here
+        // as well as defaulted in the function env: two independent statements
+        // of the same intent, so neither alone is load-bearing.
+        input: JSON.stringify({ dryRun: true, invokedBy: 'eventbridge-scheduler' }),
+        retryPolicy: { maximumRetryAttempts: 0 },  // a missed day is better than a double sweep
+      },
+    });
 
     new cdk.CfnOutput(this, 'SweepFnName', { value: sweepFn.functionName });
 

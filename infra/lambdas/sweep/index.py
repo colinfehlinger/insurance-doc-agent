@@ -46,6 +46,20 @@ def handler(event, context):
     if isinstance(event, dict) and "dryRun" in event:
         dry_run = bool(event["dryRun"])
 
+    # WHO TRIGGERED THIS. The schedule sends invokedBy="eventbridge-scheduler"
+    # in its payload; a hand-invoke does not, so it reports "manual".
+    #
+    # This exists because "did the schedule actually fire, or did I invoke it
+    # and forget?" is not answerable from a RequestId, a timestamp, or an audit
+    # row -- and that exact ambiguity is what made Day 1's diagnosis take a
+    # detour. Recording the answer at the moment of invocation is cheaper than
+    # reconstructing it afterwards.
+    invoked_by = "manual"
+    if isinstance(event, dict):
+        invoked_by = event.get("invokedBy") or (
+            "eventbridge-rule" if event.get("source") == "aws.events" else "manual"
+        )
+
     gateway_url = os.environ["GATEWAY_URL"]
     cfg = sweep.build_cfg(_SYSTEM_TEXT, gateway_url, dry_run=dry_run)
     clients = {
@@ -57,14 +71,15 @@ def handler(event, context):
     }
 
     as_of = date.today()
-    print(f"sweep start | as_of={as_of} | dryRun={dry_run} | model={cfg['model_id']} "
-          f"| promptVersion={cfg['prompt_version']} | caps: {sweep.MAX_MATTERS_PER_RUN} matters / "
-          f"{sweep.MAX_ESCALATIONS_PER_RUN} escalations")
+    print(f"sweep start | invokedBy={invoked_by} | as_of={as_of} | dryRun={dry_run} "
+          f"| model={cfg['model_id']} | promptVersion={cfg['prompt_version']} "
+          f"| caps: {sweep.MAX_MATTERS_PER_RUN} matters / {sweep.MAX_ESCALATIONS_PER_RUN} escalations")
 
     result = sweep.sweep_once(_TABLE, clients, cfg, as_of)
     result["promptVersion"] = cfg["prompt_version"]
     result["model"] = cfg["model_id"]
     result["asOf"] = as_of.isoformat()
+    result["invokedBy"] = invoked_by
 
     print("sweep summary " + json.dumps(result, default=str))
     return result
