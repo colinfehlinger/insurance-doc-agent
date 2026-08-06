@@ -172,6 +172,33 @@ the expected value caught it, not reading the output, which looked plausible.
    condition under which a broken instrument is invisible. Suspicion is cheapest
    when the answer is convenient.
 
+#### KNOWN-BAD CHECKS — commands that return convincing false negatives
+
+A running list, because each of these produced an empty result that looked like
+evidence of a real failure. **An empty result from any of these means the check
+is wrong, not that the thing is broken.**
+
+| Broken form | Symptom | Correct form |
+|---|---|---|
+| `--dimensions Name=ScheduleName,Value=ida-dev-sweep-daily` on `AWS/Scheduler` | `InvocationAttemptCount` returns **no datapoints, ever** | `--dimensions Name=ScheduleGroup,Value=default` |
+| `aws logs filter-log-events` with no `--start-time` | returns **0 events** regardless of content | pass `--start-time` (epoch ms), e.g. `$(( ($(date +%s) - 86400) * 1000 ))` |
+| Any `aws` command with a leading-slash argument in Git Bash (`/aws/lambda/...`, `/ida/dev/...`) | `ResourceNotFoundException` on resources that exist | prefix `MSYS_NO_PATHCONV=1`, or use boto3 |
+
+**The `ScheduleName` dimension has now caused a false negative twice** — once in
+the Day-2 handoff and again in the "the sweep did not run this morning"
+diagnosis, where it contributed to a conclusion that was entirely wrong: the
+sweep had fired exactly on schedule. AWS/Scheduler publishes
+`InvocationAttemptCount` under `ScheduleGroup` only; a `ScheduleName` dimension
+does not exist, and CloudWatch returns an empty series for a dimension that was
+never published rather than an error. Silence from a metric query is
+indistinguishable from a metric that is genuinely zero — which is precisely the
+property that makes a wrong dimension so convincing.
+
+The general rule these share: **a query against the wrong name, path, or window
+fails silent rather than loud.** Before concluding that something did not happen,
+confirm the check can see the thing when it *does* happen — the same
+known-positive discipline the section above demands of detectors.
+
 ### PRINCIPLE — a probabilistic guard is not a structural guarantee (2026-08-04)
 
 The generalizable lesson from the Step-6 → sweep arc, stated once here because it
