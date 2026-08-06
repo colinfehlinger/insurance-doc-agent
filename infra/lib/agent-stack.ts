@@ -10,6 +10,8 @@ import * as sns from 'aws-cdk-lib/aws-sns';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as agentcore from 'aws-cdk-lib/aws-bedrockagentcore';
 import * as scheduler from 'aws-cdk-lib/aws-scheduler';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as cwActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import { Construct } from 'constructs';
 import { IdaStackPropsBase } from './config';
 
@@ -318,12 +320,107 @@ export class AgentStack extends cdk.Stack {
         // a RequestId and a timestamp cannot. dryRun is stated explicitly here
         // as well as defaulted in the function env: two independent statements
         // of the same intent, so neither alone is load-bearing.
-        input: JSON.stringify({ dryRun: true, invokedBy: 'eventbridge-scheduler' }),
+        // NO dryRun here on purpose. The function's DRY_RUN env is the single
+        // lever for the unattended path; a payload copy would be a second place
+        // the same intent is stated, able to diverge and silently win.
+        // invokedBy stays -- it is what distinguishes a scheduled firing from a
+        // hand-invoke after the fact.
+        input: JSON.stringify({ invokedBy: 'eventbridge-scheduler' }),
         retryPolicy: { maximumRetryAttempts: 0 },  // a missed day is better than a double sweep
       },
     });
 
     new cdk.CfnOutput(this, 'SweepFnName', { value: sweepFn.functionName });
+
+    // --- Operations: alarms + ops topic -------------------------------------
+    // SEPARATE topic from escalations on purpose. An ops signal must never look
+    // like a client-facing escalation in an inbox, and the two have different
+    // audiences and different urgency.
+    const opsTopic = new sns.Topic(this, 'SweepOpsTopic', {
+      topicName: `${config.resourcePrefix}-sweep-ops`,
+      masterKey: dataKey,
+    });
+    new sns.Subscription(this, 'SweepOpsEmailSub', {
+      topic: opsTopic,
+      protocol: sns.SubscriptionProtocol.EMAIL,
+      endpoint: config.messaging.testRecipient,
+    });
+    const opsAction = new cwActions.SnsAction(opsTopic);
+
+    // 1. DID SOMETHING NOTABLE. Silence is the normal case; a daily "nothing
+    //    happened" mail would only train the reader to ignore it.
+    const notableMetric = sweepLogGroup.addMetricFilter('SweepNotableFilter', {
+      filterPattern: logs.FilterPattern.literal('"SWEEP_NOTABLE"'),
+      metricNamespace: metricNamespace,
+      metricName: 'SweepNotable',
+      metricValue: '1',
+      defaultValue: 0,
+    }).metric({ statistic: 'Sum', period: cdk.Duration.minutes(5) });
+
+    new cloudwatch.Alarm(this, 'SweepNotableAlarm', {
+      alarmName: `${config.resourcePrefix}-sweep-notable`,
+      alarmDescription: 'The sweep escalated, errored, or tripped the escalation valve.',
+      metric: notableMetric,
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    }).addAlarmAction(opsAction);
+
+    // 2. DEAD-MAN'S SWITCH -- the one that matters most. Without it, "no alarm
+    //    email" is ambiguous between "nothing to report" and "the sweep has been
+    //    dead for a week", and the second failure is silent by construction.
+    //    Dimension is ScheduleGroup (what AWS/Scheduler actually publishes);
+    //    with one schedule in the group that is exact, and would need revisiting
+    //    if a second schedule joined it.
+    // WATCHES COMPLETION, NOT ATTEMPTS -- corrected after the kill-switch test.
+    //
+    // The first version watched AWS/Scheduler InvocationAttemptCount. Arming the
+    // kill switch proved that wrong: with reserved concurrency at 0 the Scheduler
+    // still ATTEMPTED (InvocationAttemptCount went to 1) while the function never
+    // ran -- and, tellingly, Lambda emitted no Throttles and Scheduler emitted no
+    // TargetErrorCount or InvocationDroppedCount. The block is entirely silent.
+    // A dead-man's switch on attempts would therefore have reported a paused,
+    // throttled, or broken sweep as healthy, which is the precise failure it
+    // exists to catch.
+    //
+    // This metric comes from the sweep's own completion log line, so it can only
+    // increment if the function actually ran to the end.
+    sweepLogGroup.addMetricFilter('SweepCompletedFilter', {
+      filterPattern: logs.FilterPattern.literal('"sweep summary"'),
+      metricNamespace: metricNamespace,
+      metricName: 'SweepCompleted',
+      metricValue: '1',
+      defaultValue: 0,
+    });
+    const sweepRan = new cloudwatch.Metric({
+      namespace: metricNamespace,
+      metricName: 'SweepCompleted',
+      statistic: 'Sum',
+      period: cdk.Duration.hours(24),
+    });
+    new cloudwatch.Alarm(this, 'SweepDidNotRunAlarm', {
+      alarmName: `${config.resourcePrefix}-sweep-did-not-run`,
+      alarmDescription: 'The daily sweep has not COMPLETED in 24h (throttled, paused, broken, or never fired).',
+      metric: sweepRan,
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.BREACHING,  // no data == did not run
+    }).addAlarmAction(opsAction);
+
+    // 3. The Lambda blew up.
+    new cloudwatch.Alarm(this, 'SweepErrorsAlarm', {
+      alarmName: `${config.resourcePrefix}-sweep-errors`,
+      alarmDescription: 'The sweep Lambda raised an unhandled error.',
+      metric: sweepFn.metricErrors({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    }).addAlarmAction(opsAction);
+
+    new cdk.CfnOutput(this, 'SweepOpsTopicArn', { value: opsTopic.topicArn });
 
     // --- SSM contract + messaging config ------------------------------------
     // Replaces the probe's runtime-arn placeholder with the real harness ARN.

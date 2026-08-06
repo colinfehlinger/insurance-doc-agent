@@ -42,9 +42,24 @@ _SYSTEM_TEXT = decide.load_prompt()
 def handler(event, context):
     # Per-invocation so an event can override the schedule's default, e.g. a
     # hand-invoked Day-1 run that wants to be explicit rather than rely on env.
-    dry_run = sweep.DRY_RUN
-    if isinstance(event, dict) and "dryRun" in event:
+    # DRY_RUN IS A HARD FLOOR, not a default.
+    #
+    # env DRY_RUN=true forces a dry run and NO payload can lower it. env
+    # DRY_RUN=false lets a payload still ASK for dry. So the env can always be
+    # made safer by a caller, never less safe -- which is what makes
+    # `DRY_RUN=true` a pause lever that cannot be bypassed by whatever happens
+    # to invoke the function.
+    #
+    # It is also now the SINGLE lever for the unattended path: the schedule's
+    # payload no longer carries dryRun at all. Two places stating the same
+    # intent was useful while both said "dry"; going live it becomes two places
+    # that can disagree, with the payload silently winning.
+    if sweep.DRY_RUN:
+        dry_run = True
+    elif isinstance(event, dict) and "dryRun" in event:
         dry_run = bool(event["dryRun"])
+    else:
+        dry_run = False
 
     # WHO TRIGGERED THIS. The schedule sends invokedBy="eventbridge-scheduler"
     # in its payload; a hand-invoke does not, so it reports "manual".
@@ -82,4 +97,21 @@ def handler(event, context):
     result["invokedBy"] = invoked_by
 
     print("sweep summary " + json.dumps(result, default=str))
+
+    # A single, greppable token emitted ONLY when the run did something worth a
+    # human's attention. A CloudWatch metric filter turns this into a metric and
+    # an alarm, which is why it is a distinct line rather than a field inside the
+    # summary JSON: filter patterns cannot parse JSON that has a text prefix.
+    #
+    # Deliberately a log line rather than put_metric_data -- emitting metrics
+    # directly would require cloudwatch:PutMetricData on the sweep role, and that
+    # role's verified-absent permission list is worth more than the convenience.
+    if result["escalations"] or result["errors"] or result["valveTripped"]:
+        print("SWEEP_NOTABLE " + json.dumps({
+            "escalations": result["escalations"],
+            "errors": len(result["errors"]),
+            "valveTripped": result["valveTripped"],
+            "processed": result["processed"],
+            "invokedBy": invoked_by,
+        }, default=str))
     return result
