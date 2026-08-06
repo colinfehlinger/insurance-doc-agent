@@ -227,7 +227,13 @@ export class AgentStack extends cdk.Stack {
         // SAFE BY DEFAULT. Only the exact string "false" enables dispatch, so a
         // missing or malformed value dry-runs. Stage 2 flips this deliberately.
         DRY_RUN: 'true',
-        MAX_MATTERS_PER_RUN: '50',
+        // Stage A of capped-live: 5, per the approved staged rollout. Raised
+        // only once live runs are boring. DRY_RUN stays 'true' here on purpose --
+        // it is the DEFAULT, and the handler lets an explicit event payload
+        // override it, so going live is a per-invocation decision rather than a
+        // deployed state. The schedule sends dryRun:true in its own payload, so
+        // it cannot go live as a side effect of anything done here.
+        MAX_MATTERS_PER_RUN: '5',
         MAX_ESCALATIONS_PER_RUN: '10',
         LOOKAHEAD_DAYS: '7',
       },
