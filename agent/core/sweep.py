@@ -175,7 +175,8 @@ def sweep_once(table, clients, cfg, as_of: date, log=print) -> dict:
 
     results = {"consideredCandidates": considered, "examined": examined,
                "processed": 0, "skipped": skipped, "decisions": [], "errors": [],
-               "escalations": 0, "capReached": len(capped) >= MAX_MATTERS_PER_RUN,
+               "escalations": 0, "blockedCapability": 0, "blocked": [],
+               "capReached": len(capped) >= MAX_MATTERS_PER_RUN,
                "valveTripped": False, "dryRun": bool(cfg.get("dry_run"))}
     for s in skipped:
         log(f"  {s['matterId']:16s} SKIP  {s['reason']}")
@@ -202,6 +203,15 @@ def sweep_once(table, clients, cfg, as_of: date, log=print) -> dict:
             results["decisions"].append({"matterId": mid, "action": action, "auditSK": audit["SK"]})
             if action == "escalate" and cfg.get("dispatch") is True:
                 results["escalations"] += 1
+            # A "none" that means "I had no tool for what this needed" must not
+            # look like a quiet, healthy run -- that ambiguity is the whole point
+            # of the signal.
+            blocked = audit.get("blockedCapability")
+            if blocked:
+                results["blockedCapability"] += 1
+                results["blocked"].append({"matterId": mid, "via": blocked.get("via"),
+                                           "evidence": blocked.get("evidence", "")[:160]})
+                log(f"  {mid:16s} BLOCKED  no tool for the required action ({blocked.get('via')})")
             log(f"  {mid:16s} {action:9s} {'(dry-run, not dispatched)' if cfg.get('dry_run') else ''}")
         except Exception as e:  # noqa: BLE001 -- deliberate: isolate, record, continue
             sk = write_error_audit(table, mid, e)

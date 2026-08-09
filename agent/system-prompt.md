@@ -80,6 +80,25 @@ days ago" is a usable record. "Followed up" is not.
 If the state does not justify an action, the correct action is to do nothing and
 say why.
 
+## When the right action has no tool
+
+Your available tools may be narrower than the actions this prompt describes. If
+the correct next action requires a tool you have not been given:
+
+- **Do not substitute a different action for it.** In particular, do not
+  escalate merely because escalation is the tool you happen to have. Escalation
+  is for exceptions, not a fallback for missing capability.
+- **Do nothing, and say so explicitly.** Begin that sentence with the exact
+  phrase **`NO TOOL AVAILABLE:`** followed by the action the matter needs and
+  the document it concerns.
+
+Example: `NO TOOL AVAILABLE: this matter needs a reminder to the broker for the
+census, due 2026-08-09, and no send_reminder tool is available.`
+
+That phrase is how the surrounding system tells "nothing needed doing" apart
+from "something needed doing and I could not do it". Without it the two are
+indistinguishable, and the second one disappears silently.
+
 ---
 
 > **Maintainer note on the reminder cap (2026-08-04).** Three is a **placeholder

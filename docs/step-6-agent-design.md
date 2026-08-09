@@ -241,6 +241,104 @@ more realistic-looking test covered less.
 resets once its window clears, so by the time anyone looks it reads `OK` whether
 or not it ever fired. History is the artifact; state is a snapshot.
 
+### FINDING — the remind gap: safe, but invisible (2026-08-09)
+
+Production carries **one** tool. `agent/core/decide.py` defines only
+`ESCALATE_TOOLSPEC`, and both of its Converse call sites pass it alone. The
+ADR-001 eval harness carries **two** (`escalate_to_human` + a schema-only
+`send_reminder`), so the eval measures a three-way choice production cannot make.
+**S6 — the remind scenario all four models passed — cannot occur in production.**
+
+#### What the agent actually does, verbatim
+
+Asked to decide a remind-shaped matter (census missing, due in 2 days, no prior
+reminder) with only `escalate_to_human` available, Haiku 4.5 abstained 3/3 at
+temperature 0. This is *before* any prompt change — unprompted:
+
+> **Action:** Send an initial reminder to Marcus Bell.
+>
+> However, I notice that the available tools do not include a `send_reminder`
+> function. The only tool available to me is `escalate_to_human`, which is
+> designed for situations requiring human judgment…
+>
+> Since this is a routine first reminder with clear justification, and I lack the
+> tool to send it directly, I should **not escalate** — escalation is for
+> exceptions, not for routine work… **No action taken.** The matter requires a
+> reminder… This task should be routed to the appropriate system or staff member.
+
+**This is the good outcome.** It identifies the right action, declines to
+substitute escalation for a missing capability, and reasons explicitly that
+escalation is for exceptions rather than a fallback. None of the three failure
+modes worth fearing occurred: no hallucinated tool, no JSON-in-prose tool call,
+no spurious escalation.
+
+#### Safe, but invisible — and invisible is the actual defect
+
+The abstention recorded as `decision.action: "none"` — **indistinguishable from
+"nothing needed doing."** The reasoning text preserved the difference; no metric,
+alarm, or summary field did. `SWEEP_NOTABLE` fires on
+`escalations || errors || valveTripped`, none of which applied. A matter needing
+a chase produced a run that looked perfectly quiet.
+
+So the failure is not wrong action — it is **latency plus silence**. The matter
+ages untouched until it becomes overdue, at which point it converts into an
+escalation the system *can* act on. Nothing incorrect happens; the work is just
+late, and nobody is told.
+
+#### Sequencing decision
+
+1. **Visibility first (2026-08-09).** The prompt instructs the agent to prefix
+   such a refusal with `NO TOOL AVAILABLE:`; `decide.py` detects it, `sweep.py`
+   counts it, and the Lambda's `SWEEP_NOTABLE` condition includes it — reusing
+   the already-verified ops alarm and delivery path. No new alarm, topic, or IAM.
+2. **`send_reminder` deferred**, blocked on the ADR-005 SES sending-domain gap,
+   with an explicit reversal trigger and completion checklist in
+   `agent/tools/README.md`. Building it now would force solving the domain
+   question under pressure, or ship a tool that cannot send.
+
+Chose **adding** the prompt instruction over **trimming** the reminders section:
+the observed behaviour was already correct and worth codifying rather than
+leaving to luck; the guidance is needed again the moment `send_reminder` ships;
+and the marker converts a fuzzy prose heuristic into a contract the code relies
+on.
+
+**The detector is a HEURISTIC, not a control**, labelled as such in code. It
+reads model prose. Bias is deliberately toward false positives — a spurious ops
+email costs one email, while a false negative restores exactly the silence it
+exists to remove. **It is a stopgap and must be deleted when `send_reminder`
+ships**; a temporary signal left in place becomes permanent noise. The fallback
+patterns (the unprompted wordings above) stay regardless, because an instruction
+is not a guarantee.
+
+#### Verification — both required, because the system was live
+
+- **Targeted, production single-tool config vs the remind case:** 3/3 — no tool
+  called, `NO TOOL AVAILABLE:` emitted verbatim, detector fired via the marker.
+  The detector was unit-tested against two known-positives (the marker; the real
+  unprompted transcript) and two known-negatives (genuine nothing-to-do;
+  already-escalated abstain) — a detector that fired on every `none` would merely
+  relabel silence as noise.
+- **Two-model regression, `promptVersion 9ad7255d3d5b`:** Sonnet 21/21, Haiku
+  21/21, zero errors of any class. Its limit, stated plainly: the eval passes a
+  **two-tool** config, so it **structurally cannot reach** the new prompt
+  section. It proves no regression; only the targeted test proves the new
+  behaviour.
+
+#### What to expect on the next read, so it is not mistaken for a bug
+
+Once a matter sits in the remind window — missing, due soon, **not yet overdue**,
+not already escalated — the sweep will fire `sweep-notable` on it **every run**
+until `send_reminder` exists. **That is the fix working, not a regression.**
+
+**Correcting an expectation recorded at deploy time:** `MTR-2026-0184` was
+assumed to be that matter. It is not. It was *escalated* on 2026-08-07, because
+by then its census was 8 days overdue — an escalate trigger, not a remind one.
+The pre-filter now skips it, so it never reaches the model and cannot produce the
+signal. As of this deploy **all four matters are escalated, `ELIGIBLE=0`, and the
+signal is dormant** — deployed and tested, but with nothing currently exhibiting
+the gap. Seeing no `blockedCapability` is therefore expected, and is not evidence
+the detector is broken.
+
 ### PRINCIPLE — a probabilistic guard is not a structural guarantee (2026-08-04)
 
 The generalizable lesson from the Step-6 → sweep arc, stated once here because it

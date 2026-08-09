@@ -106,11 +106,13 @@ def handler(event, context):
     # Deliberately a log line rather than put_metric_data -- emitting metrics
     # directly would require cloudwatch:PutMetricData on the sweep role, and that
     # role's verified-absent permission list is worth more than the convenience.
-    if result["escalations"] or result["errors"] or result["valveTripped"]:
+    if (result["escalations"] or result["errors"] or result["valveTripped"]
+            or result.get("blockedCapability")):
         print("SWEEP_NOTABLE " + json.dumps({
             "escalations": result["escalations"],
             "errors": len(result["errors"]),
             "valveTripped": result["valveTripped"],
+            "blockedCapability": result.get("blockedCapability", 0),
             "processed": result["processed"],
             "invokedBy": invoked_by,
         }, default=str))

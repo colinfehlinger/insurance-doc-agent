@@ -20,6 +20,7 @@ both contexts.
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 import uuid
@@ -79,6 +80,58 @@ ESCALATE_TOOLSPEC = {
         },
     }
 }
+
+
+# --- blocked-capability detection ----------------------------------------------
+# HEURISTIC, NOT A CONTROL. This reads model prose, so it has false positives and
+# false negatives, and it is stated as such rather than left silently fuzzy.
+#
+# It exists because a decision of "none" is ambiguous: it means either "nothing
+# needed doing" or "something needed doing and I had no tool for it", and the
+# second one otherwise disappears -- no metric, no alarm, no summary field
+# distinguishes it. Production carries only escalate_to_human, so every matter
+# whose right answer is a reminder lands in that silent second case.
+#
+# The PRIMARY pattern is a contract: system-prompt.md instructs the agent to
+# begin such a sentence with the exact marker, which makes detection close to
+# deterministic rather than a guess about phrasing. The FALLBACK patterns are the
+# unprompted wordings actually observed in a real transcript (2026-08-07), kept
+# because an instruction is not a guarantee.
+#
+# Bias is deliberately toward FALSE POSITIVES: a spurious ops notification costs
+# one email, while a false negative restores exactly the silence this exists to
+# remove.
+#
+# THIS IS A STOPGAP. It makes a known gap observable while the gap exists, and
+# should be deleted when send_reminder ships (ADR-005 SES dependency).
+BLOCKED_MARKER = re.compile(r"NO TOOL AVAILABLE:\s*(.{0,220})", re.I | re.S)
+BLOCKED_FALLBACK = re.compile(
+    r"send_reminder"
+    r"|tools?\s+(?:do|does)\s+not\s+include"
+    r"|lack(?:s|ing)?\s+the\s+tool"
+    r"|no\s+(?:such\s+)?tool\s+(?:is\s+)?available"
+    r"|do\s+not\s+have\s+(?:a|the)\s+\w+\s+tool",
+    re.I,
+)
+
+
+def detect_blocked_capability(reasoning: str) -> dict | None:
+    """Did the agent decline because it lacked a tool, rather than because
+    nothing was needed? Returns evidence, or None.
+
+    Called ONLY when the decision was "none", so it can never influence an
+    escalate or remind path.
+    """
+    if not reasoning:
+        return None
+    m = BLOCKED_MARKER.search(reasoning)
+    if m:
+        return {"detected": True, "via": "marker", "evidence": m.group(1).strip()[:220]}
+    m = BLOCKED_FALLBACK.search(reasoning)
+    if m:
+        i = max(0, m.start() - 90)
+        return {"detected": True, "via": "fallback", "evidence": reasoning[i:m.end() + 90].strip()}
+    return None
 
 
 def load_prompt() -> str:
@@ -285,6 +338,9 @@ def decide_and_act(matter_id: str, clients: dict, cfg: dict) -> dict:
             except Exception as e:  # noqa: BLE001 -- closing summary is best-effort
                 closing = f"(closing summary unavailable: {type(e).__name__})"
 
+    # Only meaningful for a "none" decision -- see detect_blocked_capability.
+    blocked = detect_blocked_capability(reasoning) if decision["action"] == "none" else None
+
     audit = {
         "PK": f"MATTER#{matter_id}",
         "SK": f"AUDIT#{ts}#{decision_id[:8]}",
@@ -306,6 +362,7 @@ def decide_and_act(matter_id: str, clients: dict, cfg: dict) -> dict:
         "stopReason": stop,
         "modelRequestId": request_id,
         "gatewayCall": gateway_call,
+        "blockedCapability": blocked,
     }
     # dry_run suppresses DISPATCH; write_audit controls PERSISTENCE. Separate,
     # because the sweep's stage-1 rollout needs exactly "decide and record, send
