@@ -199,6 +199,48 @@ fails silent rather than loud.** Before concluding that something did not happen
 confirm the check can see the thing when it *does* happen — the same
 known-positive discipline the section above demands of detectors.
 
+#### An alarm that FIRES and an alarm that NOTIFIES are two separate guarantees
+
+Found 2026-08-07, on the first live unattended sweep. `ida-dev-sweep-notable`
+transitioned `OK -> ALARM` exactly as designed — correct metric, correct
+threshold, correct timing — and **no notification was ever sent**. CloudWatch's
+own record was unambiguous once looked at:
+
+```
+describe-alarm-history --history-item-type Action
+  Failed to execute action arn:aws:sns:...:ida-dev-sweep-ops
+```
+
+The ops topic showed `NumberOfMessagesPublished = 0`. **Cause:** the topic is
+encrypted with the shared CMK, and the key policy granted only the root account.
+An IAM-principal caller can publish to a CMK-encrypted topic because its ROLE
+carries the key permissions; a SERVICE principal cannot — CloudWatch Alarms calls
+KMS as `cloudwatch.amazonaws.com` and was denied. `ida-dev-escalations`, on the
+same key, was unaffected, because the escalate Lambda publishes with its own role.
+So the client-facing path worked while the ops path was dead, which is the
+worst-ordered pair of those two outcomes.
+
+**What made this reachable:** the alarm had been called "verified end-to-end"
+after confirming metric → alarm state → *action configured*. That verification
+stopped at the topic boundary. Configuring an action and executing one are
+different facts, and only the second involves the topic's permissions at all.
+
+| Guarantee | Proven by | NOT proven by |
+|---|---|---|
+| The alarm fires on the right condition | `describe-alarm-history --history-item-type StateUpdate`; metric datapoints | anything about delivery |
+| The alarm actually notifies someone | `--history-item-type Action` showing **"Successfully executed action"**, plus the topic's own `NumberOfMessagesPublished` / `NumberOfNotificationsDelivered` | `StateValue`, `AlarmActions` being populated, or a `set-alarm-state` test |
+
+Note `set-alarm-state` does exercise the action path and would have caught this —
+but it was used only on the two AWS-native alarms, and the one alarm verified
+"properly" with a real metric was the one whose delivery was never checked. The
+more realistic-looking test covered less.
+
+**Practice:** for any alarm whose purpose is to reach a human, assert on the
+*Action* history item and the destination's own publish/deliver metrics.
+`StateValue` is also useless here for a different reason — a short-period alarm
+resets once its window clears, so by the time anyone looks it reads `OK` whether
+or not it ever fired. History is the artifact; state is a snapshot.
+
 ### PRINCIPLE — a probabilistic guard is not a structural guarantee (2026-08-04)
 
 The generalizable lesson from the Step-6 → sweep arc, stated once here because it
