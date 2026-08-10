@@ -146,6 +146,17 @@ right tool and populating it with a falsehood is not a partial success. The
 decision and the failure modes that ruled out the alternatives are in
 [ADR-001](docs/decisions/ADR-001-foundation-model.md).
 
+**On which prompt these numbers come from.** The table above is the four-model
+selection run (`evals/results/runs-20260804T082945.json`), made under
+`promptVersion cd004f7ecc2c` — *before* the `NO TOOL AVAILABLE` instruction in §4
+was added. The system prompt is the control environment, so a change to it
+invalidates a comparison rather than extending it. The later two-model regression
+(`runs-20260809T194623.json`, `promptVersion 9ad7255d3d5b`, the version running
+today) re-ran all seven scenarios under the current prompt and returned **21/21
+for both models again, with zero errors of any class** — evidence that the prompt
+change did not regress action selection. Both result files are committed, so
+neither number has to be taken on trust.
+
 ## 6. It runs unattended, safely
 
 The agent runs daily with no human in the loop — see
