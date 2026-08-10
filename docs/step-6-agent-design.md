@@ -842,7 +842,7 @@ direct check. Recording it because the disproven theories are the seductive ones
 **What it was NOT** — each theorized, each killed by a direct check:
 
 - **NOT two accounts.** Confirmed against the machine: one credential source,
-  `[default]` → 000000000000; the `legacy-profile` profile's keys are dead
+  `[default]` → 000000000000; the only other configured profile's keys are dead
   (`InvalidClientTokenId`), so nothing could have run there. No stray profile.
 - **NOT a DynamoDB TTL expiring rows.** `describe-time-to-live` → `DISABLED`;
   the Lambda writes no expiry attribute. Rows were never disappearing.

@@ -71,8 +71,8 @@ documents are visible and get triaged; misassociated ones are not.
 | Our identities | **`test-recipient@example.com` only** — an EMAIL_ADDRESS identity. **Cannot receive.** |
 | Our inbound config | **None.** Zero receipt rule sets exist; `describe-active-receipt-rule-set` returns nothing. |
 
-**We have no domain.** `legacy-domain.example` was deleted in the account
-decommission, and it was never ours to use for this anyway.
+**We have no domain.** The only domain this account ever held was removed during
+an unrelated cleanup, and it was never ours to use for this anyway.
 
 Also relevant: *"with the exception of Amazon S3 buckets, all of the AWS
 resources that you use for receiving email with SES have to be in the same AWS
