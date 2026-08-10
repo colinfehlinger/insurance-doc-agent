@@ -38,65 +38,88 @@ failure mode most "AI back-office" demos ship with.
 
 ## System
 
+The shape of the whole thing: a fixed pipeline establishes *what a document
+says*, and an agent decides *what to do next* — with a permanent record of the
+reasoning behind every decision.
+
+```mermaid
+flowchart LR
+    subgraph Body["THE BODY — fixed, auditable pipeline"]
+        direction TB
+        A["Document lands in S3"] --> B["Bedrock Data Automation<br/>classifies + extracts + scores confidence"]
+        B --> C[("Matter state<br/>DynamoDB, single-table, audited")]
+    end
+
+    subgraph Brain["THE BRAIN — agent judgment"]
+        direction TB
+        D["Reads matter state"] --> E{"One decision:<br/>escalate or wait"}
+        E -->|escalate| F["Gateway → Lambda → SNS → email"]
+        E -->|no tool for the<br/>right action| G["Says so explicitly —<br/>never guesses, never fakes it"]
+    end
+
+    C --> D
+    F -.->|writes| H[("Audit record:<br/>reasoning + decision + outcome")]
+    G -.->|writes| H
+```
+
+**Note on the brain half.** Orchestration runs as a client-side loop calling
+Bedrock Converse directly — *not* the managed AgentCore Harness, which was
+retired after its runtime was found not to inject tools into the model request
+at all ([ADR-007](decisions/ADR-007-harness-tool-injection-failure.md)). The
+**Gateway is still in the path**: it holds the credentials, invokes the tool
+Lambda, and logs every call, so the agent never holds AWS credentials itself.
+
+Production currently wires **one** tool, `escalate_to_human`. The other four
+remain designed and deferred — see [agent/tools/README.md](../agent/tools/README.md).
+
+## The unattended sweep
+
+The agent runs daily with no human in the loop. Everything below the decision
+point exists because unsupervised execution needs guardrails that do not depend
+on the model behaving well.
+
 ```mermaid
 flowchart TB
-    subgraph body["BODY — fixed pipeline (auditable, confidence-gated)"]
-        direction TB
-        email["SES inbound email<br/>+ portal upload"]
-        raw[("S3 raw bucket<br/>ida-dev-raw-*<br/>KMS, versioned, TLS-only")]
-        ext["Lambda"]
-        bda["Bedrock Data Automation<br/>classify + extract<br/>with confidence scores"]
-        review["Human review queue<br/>low-confidence fields"]
-        ddb[("DynamoDB — matter state<br/>ida-dev-matters<br/>required / received / missing<br/>due dates, action history")]
+    SCHED["EventBridge Scheduler<br/>daily 07:00 America/New_York<br/>(timezone-aware, not fixed UTC)"] -->|invokedBy=eventbridge-scheduler| SWEEP["Sweep Lambda"]
+    SWEEP --> Q["Query GSI1:<br/>missing + in-review documents"]
+    Q --> DEDUPE["Dedupe to matter IDs<br/>(one matter can match twice)"]
+    DEDUPE --> FILTER{"Pre-filter:<br/>already escalated?"}
+    FILTER -->|yes → skip| DONE1["No model call —<br/>zero cost, zero risk"]
+    FILTER -->|no| CAP{"Matter cap:<br/>≤5 processed per run"}
+    CAP -->|over cap| DEFER["Remainder deferred<br/>to the next run"]
+    CAP -->|under cap| AGENT["Agent decides<br/>(per-matter try/except —<br/>one failure can't kill the batch)"]
 
-        email --> raw --> ext --> bda
-        bda -->|"below threshold"| review
-        bda -->|"at/above threshold"| ddb
-        review --> ddb
-    end
+    AGENT -->|nothing needed| NOOP["No action —<br/>audit row records why"]
+    AGENT -->|blocked / no tool| SIGNAL["NO TOOL AVAILABLE marker<br/>→ detected, not silent"]
+    AGENT -->|escalate| VALVE{"Escalation valve:<br/>≤10 dispatched per run"}
+    VALVE -->|valve tripped| HOLD["Held for next run —<br/>20 escalations is one anomaly,<br/>not 20 findings"]
+    VALVE -->|under valve| DISPATCH["Gateway → Lambda<br/>idempotent, normalised key"]
 
-    subgraph brain["BRAIN — Bedrock AgentCore (judgment only)"]
-        direction TB
-        trigger["Trigger:<br/>state change or scheduled sweep"]
-        runtime["AgentCore Runtime + Harness<br/>'what happens next on this matter?'"]
-        mem["Memory<br/>per-matter + per-counterparty context"]
-        pol["Policy<br/>hard guardrails"]
-        gw["Gateway — the only way to act"]
+    NOOP --> ROW[("AUDIT# rows")]
+    SIGNAL --> ROW
+    DISPATCH --> ROW2[("AUDIT# + ACTION#escalate rows")]
+    DISPATCH --> MAIL["Escalation email<br/>(client-facing SNS topic)"]
+    SIGNAL --> ALARM["3 CloudWatch alarms →<br/>ops SNS topic, separate from<br/>the client-facing one"]
+    DISPATCH --> ALARM
 
-        trigger --> runtime
-        mem <--> runtime
-        pol --> runtime
-        runtime --> gw
-    end
-
-    subgraph tools["TOOLS — the agent's entire blast radius"]
-        direction TB
-        t1["send_reminder → SES"]
-        t2["schedule_followup → EventBridge"]
-        t3["escalate_to_human → SES/SNS"]
-        t4["update_matter → DynamoDB (append-only)"]
-        t5["flag_anomaly → DynamoDB + SNS"]
-    end
-
-    subgraph view["VIEW — later"]
-        ui["React on S3 + CloudFront<br/>API Gateway + Lambda + Cognito<br/>30-second status readout"]
-    end
-
-    ddb --> trigger
-    gw --> t1 & t2 & t3 & t4 & t5
-    t4 --> ddb
-    t5 --> ddb
-    ddb --> ui
-
-    classDef bodyStyle fill:#e8f0fe,stroke:#3367d6,color:#12243d
-    classDef brainStyle fill:#fce8e6,stroke:#c5221f,color:#3d1210
-    classDef toolStyle fill:#e6f4ea,stroke:#137333,color:#0d2818
-    classDef viewStyle fill:#f1f3f4,stroke:#5f6368,color:#202124
-    class email,raw,ext,bda,review,ddb bodyStyle
-    class trigger,runtime,mem,pol,gw brainStyle
-    class t1,t2,t3,t4,t5 toolStyle
-    class ui viewStyle
+    KILL["Kill switch:<br/>reserved concurrency = 0<br/>(tested against hand-invoke AND schedule)"] -.->|stops everything,<br/>instantly| SWEEP
+    DEADMAN["Dead-man's switch:<br/>alarms when no COMPLETION signal<br/>(SweepCompleted) in 24h"] -.->|watches the sweep<br/>finishing, not firing| ROW
 ```
+
+**Why the dead-man's switch watches completion, not firing.** Its first version
+watched `InvocationAttemptCount` — whether the schedule fired. Arming the kill
+switch proved that wrong: the Scheduler still *attempted* while the function
+never ran, and Lambda emitted no throttle metric, so the block was entirely
+silent. An alarm on firing would have reported a paused, throttled, or broken
+sweep as healthy — the precise failure it exists to catch. It now watches a
+`SweepCompleted` metric derived from the sweep's own completion log line, which
+can only increment if the run finished.
+
+**Why the pre-filter runs before the cap.** Capping first means already-escalated
+matters consume cap slots and are then discarded, so a backlog starves the
+sweep — throughput degrades toward zero while new matters wait for a tick that
+never has room, silently and monotonically. Filtering first is affordable because
+the filter is a DynamoDB query with no model cost.
 
 ## Compliance layer
 

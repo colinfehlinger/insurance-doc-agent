@@ -1,30 +1,80 @@
 # Document-Chase Agent
 
-An AI agent for group-benefits and TPA back offices. For each **matter** — a
-group renewal, a claim, an onboarding, a closing — it tracks which documents are
-still missing, chases them, and gives the owner a 30-second status view, with
-compliance-grade data handling throughout.
+**An AI agent that chases missing documents in a group-benefits back office —
+and can prove why it did what it did.**
 
-Built in the open. Each step is a working, deployable increment.
+For each **matter** (a group renewal, a claim, an onboarding, a closing) it
+tracks which documents are still outstanding, decides what should happen next,
+and acts — unsupervised, on a daily schedule — while writing a permanent record
+of its reasoning.
+
+It runs on real AWS infrastructure. **[DEMO.md](DEMO.md) walks through it
+working**, with verbatim excerpts from live audit records: the agent escalating
+an unreadable document, declining to repeat itself, and — when the right action
+had no tool wired for it — saying so explicitly instead of forcing the wrong one.
+
+```mermaid
+flowchart LR
+    subgraph Body["THE BODY — fixed, auditable pipeline"]
+        direction TB
+        A["Document lands in S3"] --> B["Bedrock Data Automation<br/>classifies + extracts + scores confidence"]
+        B --> C[("Matter state<br/>DynamoDB, single-table, audited")]
+    end
+
+    subgraph Brain["THE BRAIN — agent judgment"]
+        direction TB
+        D["Reads matter state"] --> E{"One decision:<br/>escalate or wait"}
+        E -->|escalate| F["Gateway → Lambda → SNS → email"]
+        E -->|no tool for the<br/>right action| G["Says so explicitly —<br/>never guesses, never fakes it"]
+    end
+
+    C --> D
+    F -.->|writes| H[("Audit record:<br/>reasoning + decision + outcome")]
+    G -.->|writes| H
+```
 
 ## The design principle
 
-**The pipeline is a fixed, auditable code path. The agent owns only the judgment.**
+**The pipeline is a fixed, auditable code path. The agent owns only the
+judgment.**
 
-Ingestion, classification, and extraction run as a fixed code path with
+Ingestion, classification, and extraction run as a fixed path with
 confidence-scored extraction and mandatory human review below threshold.
-**There is no agentic loop in extraction** — nothing in that path chooses what
-to do next; it only decides what a document *says*, and attaches a number saying
-how sure it is. "How did you get this field?" is answered with the source
-document, the extraction confidence, whether it crossed the review threshold,
-and who approved it if it did not. Not "the model decided."
+**There is no agentic loop in extraction** — nothing there chooses what to do
+next; it decides what a document *says* and attaches a number saying how sure it
+is. "How did you get this field?" is answered with the source document, the
+extraction confidence, whether it crossed the review threshold, and who approved
+it if it did not. Not "the model decided."
 
 The agent receives state that has already been established and answers exactly
-one question: *what should happen next on this matter?* It can remind, wait,
-escalate, flag, or record. Those five tools are its entire capability surface,
-so its blast radius is the tool list rather than the model.
+one question: *what should happen next on this matter?* Its blast radius is the
+tool list, not the model.
 
-See [docs/architecture.md](docs/architecture.md) for the full picture.
+See [docs/architecture.md](docs/architecture.md) for the full picture, including
+the unattended sweep and its guardrails.
+
+## Where the interesting decisions are
+
+The build log is the point of this repo as much as the code. Each of these is a
+decision that turned out to matter, recorded with the evidence that drove it:
+
+| | |
+|---|---|
+| [ADR-001](docs/decisions/ADR-001-foundation-model.md) | Choosing the production model by evaluation, not vibes — and the mechanical rubric that disqualified two candidates |
+| [ADR-002](docs/decisions/ADR-002-bda-vs-textract.md) | Bedrock Data Automation vs Textract, and the honest limit of calling any of it "deterministic" |
+| [ADR-005](docs/decisions/ADR-005-document-matter-correlation.md) | Correlating documents to matters; the SES/domain constraint that still gates outbound email |
+| [ADR-006](docs/decisions/ADR-006-agent-architecture.md) | Building the agent natively on stable CDK L1s instead of an alpha sub-project |
+| [ADR-007](docs/decisions/ADR-007-harness-tool-injection-failure.md) | **The managed AgentCore Harness never injected tools into the model request.** Proven from the literal request bytes, then architected around |
+| [step-6 design notes](docs/step-6-agent-design.md) | The long-form build log: guardrail design, and the verification failures that shaped it |
+
+Two lessons from those notes generalise beyond this project, and both were
+learned the expensive way:
+
+- **A probabilistic guard is not a structural guarantee.** A model behaving
+  correctly is evidence; only code that cannot do otherwise is a control.
+- **A test is trustworthy only once shown to fail on a known-bad input.** A
+  verification suite here passed while the pipeline it checked was broken, more
+  than once.
 
 ## Status
 
@@ -233,10 +283,32 @@ For the agent runtime (Step 3+):
 
 ## Deploy
 
+### Configuration kept out of the repo
+
+Two values are deliberately **not committed**, for the same reason
+`aws-targets.json` and `cdk.context.json` are gitignored — they identify a real
+account or a real person:
+
+```bash
+cp .env.example .env      # then fill in real values; .env is gitignored
+```
+
+| Variable | Why it is external |
+|---|---|
+| `IDA_SES_IDENTITY` | The verified SES identity used as the escalation/ops recipient and the `send_reminder` sender. A real address in dev. If unset, `infra/lib/config.ts` falls back to a reserved-for-documentation address, so a misconfigured deploy **fails loudly at SES on an unverified identity** rather than quietly emailing someone real. |
+| `EXPECTED_ACCOUNT` | The 12-digit account the agent is deployed in. Operational scripts assert against it and refuse to run if the shell's credentials resolve elsewhere — the guard that closed a class of cross-account false readings during the build. |
+
 ```bash
 cd infra
 npm install
 npx cdk synth -c stage=dev        # no AWS calls, safe to run anytime
+```
+
+Deploying without `IDA_SES_IDENTITY` set will synth and deploy, but the SNS email
+subscriptions will point at the placeholder address:
+
+```bash
+IDA_SES_IDENTITY=you@example.com npx cdk deploy Ida-Dev-Agent -c stage=dev
 ```
 
 First deploy — bootstraps the account, then deploys everything:
