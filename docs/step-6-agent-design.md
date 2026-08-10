@@ -132,6 +132,73 @@ recipient, over-cadence, reminding when it should escalate). So: **thin slice =
 prompt only; tool-expansion pass = add the Cedar policy set above at the
 Gateway.** Stated plainly so it is a scheduled addition, not an omission.
 
+### FUTURE TOOL SEQUENCING — interactions found before building (2026-08-10)
+
+Design analysis for `schedule_followup`, `update_matter`, and `flag_anomaly`,
+recorded before any of them was built. Nothing here is implemented; production
+still carries `escalate_to_human` alone.
+
+**Proposed shapes**, each mirroring `escalate_to_human`'s proven pattern (Lambda
+behind a Gateway target, conditional write, record-then-act, `AUDIT#` row from
+`decide_and_act`):
+
+| Tool | Idempotency key | Side effect |
+|---|---|---|
+| `schedule_followup` | `ACTION#followup#<docType>#<followUpDate>` | none |
+| `update_matter` | `ACTION#note#<sha256(note)[:12]>` | none |
+| `flag_anomaly` | `ACTION#anomaly#<normalized type>` | SNS publish |
+
+The keys differ deliberately. Escalation is once-per-doc; a **deferral is
+inherently repeatable**, so keying it on doc alone would make a second deferral
+impossible while keying it on a timestamp would write a fresh row on every daily
+run. Date-keyed makes "same deferral, re-decided" a no-op. `update_matter` is
+content-addressed for the same reason. It writes **only** `ACTION#note` rows and
+never `DOC#`/`META`, which makes the append-only rule structural rather than a
+promise.
+
+#### THE INTERACTION THAT MATTERS MOST
+
+**`schedule_followup` would likely mask the `blockedCapability` signal.** With a
+deferral tool available, the remind case gains a *plausible* alternative: the
+agent may defer instead of emitting `NO TOOL AVAILABLE:`. The signal stops
+firing, and it looks like the gap closed when it did not — a matter needing a
+**reminder** would instead be **deferred**, potentially forever, and the
+observability built on 2026-08-09 would go quiet without anything failing.
+
+This is the trap the whole remind-gap arc exists to avoid, reappearing one level
+up: a signal that stops firing is indistinguishable from a problem that stopped
+happening. Any plan to add `schedule_followup` must say how the remind signal
+stays alive alongside it.
+
+#### Four further interactions, each cheap to miss
+
+1. **`schedule_followup` needs a `matter_state` change first.** The
+   "let the agent re-decide" pattern works for escalation only because the
+   escalate row lands in `actionHistory`. `matter_state` projects
+   `{action, actor, reason}` — **the follow-up date would not be visible**, so the
+   agent could not tell a live deferral from an expired one.
+2. **`flag_anomaly` bypasses the email valve.** `MAX_ESCALATIONS_PER_RUN` counts
+   escalations only, so an anomaly-heavy run could send unbounded email through a
+   path the valve cannot see.
+3. **Eval fixtures need re-litigating.** S5 (*missing, due in 14 days* →
+   `none|remind`) has an obviously better answer once deferral exists, and the
+   harness's two-tool config would have to widen to four or it would be testing a
+   surface production no longer has.
+4. **Infra cost is larger than it looks:** three Lambdas, three Gateway targets,
+   three log groups each needing the DESTROY-policy fix (or the orphan-collision
+   class reopens), and IAM per role.
+
+#### Recommended sequencing
+
+`update_matter` **first and alone** — no side effects, no valve interaction, no
+signal interference, and it exercises the four-tool wiring path once. Then
+`flag_anomaly` with the valve fix. Then `schedule_followup` last, only once the
+remind-signal question above has an answer.
+
+Building all three together would change the model's entire selection space in a
+single deploy on a live system, immediately after the current behaviour was
+proven end-to-end — discarding the baseline that makes a regression visible.
+
 ### PRINCIPLE — a test is trustworthy only once shown to fail on a known-bad input (2026-08-04)
 
 Written down after the same mistake three times in one week. A test that has
