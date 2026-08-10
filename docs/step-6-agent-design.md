@@ -334,10 +334,66 @@ until `send_reminder` exists. **That is the fix working, not a regression.**
 assumed to be that matter. It is not. It was *escalated* on 2026-08-07, because
 by then its census was 8 days overdue — an escalate trigger, not a remind one.
 The pre-filter now skips it, so it never reaches the model and cannot produce the
-signal. As of this deploy **all four matters are escalated, `ELIGIBLE=0`, and the
-signal is dormant** — deployed and tested, but with nothing currently exhibiting
-the gap. Seeing no `blockedCapability` is therefore expected, and is not evidence
-the detector is broken.
+signal. At deploy time **all four matters were escalated, `ELIGIBLE=0`, and the
+signal was dormant** — deployed and tested, but with nothing exhibiting the gap.
+
+#### CLOSING EVIDENCE — the chain proven end-to-end, unattended (2026-08-10)
+
+The detector had been proven only in isolation, by direct Converse invocation.
+That is the same shape as several failures in this project: units passing while
+the assembled pipeline did not. So a matter was seeded into the genuine remind
+window (`MTR-2026-0209`, signed employer application missing, due in 4 days, no
+prior contact) via the seed script, and the deployed path was left to run
+unattended.
+
+The `2026-08-10` 07:00 ET scheduled run, `invokedBy=eventbridge-scheduler`,
+`dryRun=False`, `promptVersion 9ad7255d3d5b`:
+
+```
+examined 5 | skipped 4 | processed 1 | escalations 0 | blockedCapability 1
+MTR-2026-0209  BLOCKED  no tool for the required action (marker)
+SWEEP_NOTABLE {"escalations": 0, "blockedCapability": 1, ...}
+```
+
+The agent's own reasoning, verbatim, reaching the remind conclusion by argument
+rather than by hitting an engineered trigger:
+
+> **Urgency:** Due date is approaching but not yet passed. Four days is near
+> enough to warrant immediate contact, but not so imminent that escalation is the
+> first move.
+>
+> **Decision:** Send a first reminder to the broker… However, I do not have a
+> `send_reminder` tool available in my function set. The only tool I have is
+> `escalate_to_human`.
+>
+> **NO TOOL AVAILABLE:** this matter needs a reminder to the broker (Imani Osei)
+> for the signed employer application, due 2026-08-14, and no send_reminder tool
+> is available.
+
+Every link, with its artifact:
+
+| Link | Evidence |
+|---|---|
+| Scheduled, unattended | `invokedBy=eventbridge-scheduler`, 11:00:05Z, cold start |
+| Reached the model | `examined 5, skipped 4, processed 1` — pre-filter let 0209 through |
+| Marker emitted | `NO TOOL AVAILABLE:` verbatim in the reasoning |
+| `AUDIT#` row | `decision.action: none`, `blockedCapability.via: marker`, `gatewayCall: null` |
+| No wrong action | `ACTION#escalate` on 0209 stayed **0**; `escalations: 0` |
+| Token → metric | `SweepNotable = 1` at 10:56Z |
+| Metric → alarm | `OK → ALARM` at 11:01:10Z |
+| Alarm → delivery | `[EXECUTED] Successfully executed action …ida-dev-sweep-ops`; topic `Published 1 / Delivered 1 / Failed 0` |
+| Nothing else touched | 0142/0157/0163/0184 all unchanged, zero rows dated today |
+
+Note the alarm had already reset to `OK` by 11:16:10Z when its 5-minute window
+cleared — which is why **alarm history, not current `StateValue`, is the artifact
+that proves a transition happened.**
+
+**The window is finite.** `MTR-2026-0209`'s document is due `2026-08-14`, so runs
+on 08-11 through 08-14 remain in the remind window; from 08-15 it is overdue and
+the matter converts to the escalate branch, at which point the signal stops and
+the pre-filter takes over permanently. Re-seeding a fresh remind-window matter is
+what keeps this branch observable — the branch is a *state*, not a fixture, and
+it expires.
 
 ### PRINCIPLE — a probabilistic guard is not a structural guarantee (2026-08-04)
 
