@@ -43,6 +43,10 @@ const OVERDUE = daysFromNow(-2);
 const SOON = daysFromNow(3);
 const LATER = daysFromNow(11);
 const LATEST = daysFromNow(14);
+// The remind window: close enough to chase, not yet overdue. Deliberately
+// distinct from SOON so the remind fixture cannot drift into the escalate
+// branch on the same day SOON does.
+const REMIND_WINDOW = daysFromNow(4);
 
 // --- Types (the shape the agent reads) -------------------------------------
 
@@ -74,8 +78,14 @@ export interface Matter {
   readonly requiredDocuments: readonly RequiredDocument[];
   readonly actionHistory: readonly MatterAction[];
   readonly status: 'open' | 'blocked' | 'awaiting-review' | 'closed';
-  /** Census content used to render this matter's synthetic document. */
-  readonly census: CensusContent;
+  /**
+   * Census content used to render this matter's synthetic document. OPTIONAL:
+   * a matter with no census here gets no upload, so its required documents stay
+   * genuinely `missing` rather than being turned into `in-review` by BDA. That
+   * is the only way to seed the REMIND branch -- a document that is missing and
+   * due soon, not one that arrived and was hard to read.
+   */
+  readonly census?: CensusContent;
 }
 
 interface CensusContent {
@@ -170,6 +180,33 @@ const AMBIGUOUS_MATTER: Matter = {
     planEffectiveDate: '2026-10-15',
     employees: [{ name: 'Otis Pemberton', tier: 'Employee Only' }],
   },
+};
+
+// The REMIND-branch fixture. Every other seeded matter ends up either overdue
+// (escalate) or received-but-unreadable (escalate on data quality), so nothing in
+// the table has ever exercised the one branch where the right answer is a
+// reminder. Deliberately has NO census content, so no PDF is uploaded and BDA
+// never touches it -- the required document stays `missing`, which is the whole
+// point. A signed employer application is the natural choice: it is a document a
+// broker returns, not one the pipeline extracts.
+const REMIND_MATTER: Matter = {
+  matterId: 'MTR-2026-0209',
+  matterType: 'group-renewal',
+  clientName: 'Bellweather Print Works',
+  counterpartyName: 'Imani Osei',
+  counterpartyEmail: 'imani.osei@example-brokerage.test',
+  openedAt: '2026-07-20T09:30:00Z',
+  targetCloseDate: daysFromNow(26),
+  status: 'open',
+  requiredDocuments: [
+    {
+      docType: 'signed-employer-application',
+      label: 'Signed employer application',
+      status: 'missing',
+      dueDate: REMIND_WINDOW,
+    },
+  ],
+  actionHistory: [], // no prior contact -- a first reminder is the correct action
 };
 
 // --- Minimal PDF writer (no dependencies) -----------------------------------
@@ -286,7 +323,19 @@ function main(): void {
   }
 
   const work = mkdtempSync(join(tmpdir(), 'ida-seed-'));
-  const all = [...MATTERS, AMBIGUOUS_MATTER];
+  let all = [...MATTERS, AMBIGUOUS_MATTER, REMIND_MATTER];
+
+  // --only <matterId> seeds a SINGLE matter. Re-seeding everything would reset
+  // doc statuses and re-upload PDFs across matters the live sweep is already
+  // reasoning about, which is a real side effect on a running system rather than
+  // a convenience.
+  const onlyIdx = process.argv.indexOf('--only');
+  if (onlyIdx !== -1) {
+    const wanted = process.argv[onlyIdx + 1];
+    all = all.filter((m) => m.matterId === wanted);
+    if (all.length === 0) throw new Error(`--only ${wanted}: no such matter in this seeder`);
+    console.log(`--only ${wanted}: seeding 1 matter, leaving all others untouched`);
+  }
 
   for (const m of all) {
     console.log(`\n=== ${m.matterId} (${m.clientName}) ===`);
@@ -294,6 +343,11 @@ function main(): void {
     for (const d of m.requiredDocuments) putItem(ddbDocItem(m, d));
     for (const a of m.actionHistory) putItem(ddbActionItem(m, a));
 
+    // No census content => no upload => required documents stay `missing`.
+    if (!m.census) {
+      console.log('  no census content -- skipping upload so documents stay missing');
+      continue;
+    }
     // Upload the census PDF under the ADR-005 key convention.
     const pdf = buildCensusPdf(m.census);
     const local = join(work, `${m.matterId}-census.pdf`);
@@ -301,6 +355,11 @@ function main(): void {
     const key = `matters/${m.matterId}/census.pdf`;
     aws(['s3', 'cp', local, `s3://${rawBucketEnv}/${key}`]);
     console.log(`  uploaded ${key}`);
+  }
+
+  if (onlyIdx !== -1) {
+    console.log('--only: skipping the unassociated/orphan upload.');
+    return;
   }
 
   // One document that does NOT match the key convention, to exercise triage.
