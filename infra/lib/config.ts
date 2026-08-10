@@ -51,17 +51,17 @@ export interface MessagingConfig {
    * Where reminder emails are sent in this stage. SES production access is
    * enabled on this account, so no per-recipient verification is required -- but
    * see senderAddress: the recipient still has to be an address that can
-   * actually receive, which the gmail can and owner@example.com cannot yet.
+   * actually receive -- a mailbox that exists, not merely a verified domain.
    */
   readonly testRecipient: string;
   /**
    * The From address. SES requires the sender identity (address or its domain)
    * to be verified before it can send at all. As of 2026-07-22 the ONLY verified
-   * identity in this account is test-recipient@example.com, and fehlingerops.com
+   * identity in this account is the address in IDA_SES_IDENTITY, and fehlingerops.com
    * is not yet registered (ADR-005 domain track).
    *
    * send_reminder is the final beat of the Step 5 slice, so both sender and
-   * recipient are pinned to the verified gmail for this run -- otherwise the
+   * recipient are pinned to the one verified identity for this run -- otherwise the
    * milestone would fail at the last step on an unverified identity. Swap both
    * to the real domain (sender no-reply@..., recipient/aliases docs+{token}@...)
    * once that domain is registered and SES-verified per the ADR-005 track.
@@ -69,8 +69,22 @@ export interface MessagingConfig {
   readonly senderAddress: string;
 }
 
-// Pinned for this run: the only verified SES identity. See MessagingConfig.
-const VERIFIED_SENDER_IDENTITY = 'test-recipient@example.com';
+/**
+ * The verified SES identity, supplied from OUTSIDE the repo.
+ *
+ * This is a real personal address in dev, so it is not committed -- same
+ * reasoning as `aws-targets.json` and `cdk.context.json`, which are gitignored
+ * for the account-id leak class. Set it in the environment before synth/deploy:
+ *
+ *     IDA_SES_IDENTITY=you@example.com npx cdk deploy Ida-Dev-Agent -c stage=dev
+ *
+ * See `.env.example` for the documented placeholder. The fallback below is a
+ * reserved-for-documentation address (RFC 2606), so a missing env var produces
+ * a deploy that is obviously wrong rather than one that silently emails a real
+ * person: SES will reject an unverified identity, which fails loudly.
+ */
+const VERIFIED_SENDER_IDENTITY =
+  process.env.IDA_SES_IDENTITY ?? 'test-recipient@example.com';
 
 const STAGES: Record<Stage, Omit<StageConfig, 'stackPrefix' | 'resourcePrefix' | 'ssmPrefix'>> = {
   dev: {
