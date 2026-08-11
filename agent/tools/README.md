@@ -4,7 +4,12 @@ The agent's entire capability surface. If an action is not in this list, the
 agent cannot take it — which is the point. The blast radius of the model is the
 tool list, not the model.
 
-All five are exposed through **AgentCore Gateway** (`CfnGateway` +
+**One of the five is built.** `escalate_to_human` is live; the other four are
+designed and deliberately unbuilt. The table below is the intended surface, not
+the shipped one — production passes exactly one tool to the model, and the
+status column is the authority on which.
+
+What is built is exposed through **AgentCore Gateway** (`CfnGateway` +
 `CfnGatewayTarget`), so the agent never holds AWS credentials directly and every
 invocation is logged by Gateway rather than being trusted from inside the loop.
 
@@ -32,21 +37,40 @@ design rests on.
 timestamp, and the agent's stated reason. This is a compliance deliverable, not
 debug logging.
 
-**Guardrails live outside the prompt.** Reminder caps, the never-contact-an-
-insured rule, and the escalate-past-due-date rule are enforced by AgentCore
-Policy (`CfnPolicy` / `CfnPolicyEngine`), so they hold even if the prompt is
-bypassed or the model misbehaves. The system prompt states them too — belt and
-braces — but the prompt is not the control.
+**Guardrails belong outside the prompt — and today only some of them are.** The
+design target is AgentCore Policy (`CfnPolicy` / `CfnPolicyEngine`) holding the
+reminder caps, the never-contact-an-insured rule, and the escalate-past-due-date
+rule, so they survive a bypassed prompt or a misbehaving model. **That is not
+built.** Cedar is deferred until `send_reminder` gives it something with a real
+abuse surface to police ([ADR-006](../../docs/decisions/ADR-006-agent-architecture.md)).
 
-## Open questions for the AgentCore step
+What *is* structural today is narrower, and worth stating precisely rather than
+rounding up: the model is passed exactly one tool, so no other action is
+reachable; the scheduled sweep skips already-escalated matters **before the
+model is called at all**; and per-run caps bound both matters examined and
+escalations dispatched. Everything else in this section is currently the prompt
+asking nicely — belt without braces. A model that behaves is evidence; only
+code that cannot do otherwise is a control. The guardrail table in
+[docs/step-6-agent-design.md](../../docs/step-6-agent-design.md) tracks which is
+which.
 
-- Does `send_reminder` render the email body itself, or does it pick from
-  approved templates with slots? Templates are far easier to defend in an audit;
-  free-form generation reads better. Leaning templates-with-slots for anything
-  leaving the building.
-- Idempotency: what stops a retried invocation from sending two reminders? Likely
-  a per-matter action key checked in `update_matter` before `send_reminder` is
-  allowed to fire.
+## Open questions
+
+**Still open — does `send_reminder` render the email body, or fill approved
+templates with slots?** Templates are far easier to defend in an audit;
+free-form generation reads better. Leaning templates-with-slots for anything
+leaving the building. This gets decided when the tool is built, not before.
+
+**Answered — idempotency.** The original guess was a per-matter action key
+checked before the tool fires. What shipped for `escalate_to_human` is stricter
+and is the pattern the remaining tools will follow: **record-then-act**. The
+handler does a conditional put on the action row (`attribute_not_exists(SK)`)
+and only performs the side effect if that write wins. A retry loses the
+condition and returns without re-sending. The key is composed from the matter
+and a **normalised** document type, so it is never model-authored — an
+identical decision phrased differently by the model still collides on the same
+key. Ordering matters: acting first and recording after leaves a delivered
+email with no row to prove it happened.
 
 
 ## `send_reminder` — deferred, with an explicit reversal trigger (2026-08-09)

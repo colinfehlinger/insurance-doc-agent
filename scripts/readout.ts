@@ -96,7 +96,10 @@ function main(): void {
     for (const d of docs) {
       const st = s(d.status);
       const mark = STATUS_MARK[st] ?? `[${st}] `;
-      const conf = d.extractionConfidence ? `  conf=${d.extractionConfidence.N ?? ''}` : '';
+      // A `missing` doc was never extracted, so its confidence is stored as a
+      // DynamoDB NULL -- truthy as an object, but with no .N. Test the number,
+      // not the attribute, or the readout prints a bare "conf=".
+      const conf = d.extractionConfidence?.N ? `  conf=${d.extractionConfidence.N}` : '';
       console.log(`     ${mark}${s(d.SK).slice('DOC#'.length)}  due ${s(d.dueDate)}${conf}`);
     }
     if (actions.length) console.log(`     ${actions.length} action(s) on record`);

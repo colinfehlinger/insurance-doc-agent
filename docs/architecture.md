@@ -29,9 +29,12 @@ approved it if it did not. That is a defensible answer. "The model decided" is
 not.
 
 The agent is handed state that has already been established and answers one
-question: *what should happen next on this matter?* It can remind, wait,
-escalate, flag, or record — and nothing else, because those five tools are its
-entire capability surface.
+question: *what should happen next on this matter?* Its blast radius is the tool
+list, not the model. Five tools are designed — remind, wait, escalate, flag,
+record — and **production passes exactly one of them** (`escalate_to_human`);
+the rest are deliberately unbuilt. Nothing outside that list is reachable, which
+is why a missing capability surfaces as the agent saying so rather than as an
+improvised substitute.
 
 Separating the two is what makes the system defensible. Mixing them is the
 failure mode most "AI back-office" demos ship with.

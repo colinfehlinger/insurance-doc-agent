@@ -78,8 +78,9 @@ learned the expensive way:
 
 ## Status
 
-**Steps 1–6 complete. The system works end to end on real infrastructure — the
-deterministic pipeline and the agent on top of it.** A document lands in S3,
+**Steps 1–7 complete. The system works end to end on real infrastructure — the
+deterministic pipeline, the agent on top of it, and the agent running
+unattended on a daily schedule.** A document lands in S3,
 Bedrock Data Automation classifies and extracts it, the result is correlated to
 its matter, confidence-scored, and written to matter state — and where it can't
 be trusted (low confidence) or can't be placed (an unassociated document) it
@@ -94,15 +95,18 @@ email. Verified against the persisted artifacts, not the invoke's word.
 | `Ida-Dev-State` | DynamoDB `ida-dev-matters`, single-table `PK`/`SK` + `GSI1`, on-demand, CMK, PITR | Real |
 | `Ida-Dev-Ingestion` | S3 raw bucket — CMK, versioned, TLS-only, public access blocked, EventBridge on | Real |
 | `Ida-Dev-Understanding` | BDA project + census blueprint, submit + mapper Lambdas, 2 EventBridge rules | Real |
-| `Ida-Dev-Agent` | Gateway + `escalate_to_human` target + tool Lambda + SNS + messaging config (managed Harness retired — ADR-007; agent runs client-side in `scripts/agent-loop.py`) | Real |
+| `Ida-Dev-Agent` | Gateway + `escalate_to_human` target + tool Lambda + SNS + messaging config; the daily sweep Lambda, its EventBridge **Scheduler**, and 3 CloudWatch alarms (managed Harness retired — ADR-007; the agent runs client-side from `agent/core/`) | Real |
 | `ViewStack` | Defined in [infra/lib/view-stack.ts](infra/lib/view-stack.ts), not instantiated | Later |
 
 All five are `CREATE_COMPLETE` in dev (us-east-1).
 
-**Agent runtime probe (Step 3).** A separate stack,
+**Agent runtime probe (Step 3) — retired and removed.** A separate stack,
 `AgentCore-IdaAgentProbe-dev`, deployed by `agentcore deploy` rather than by
-`infra/`. Runtime status **READY**, invoked successfully. Kept deployed for
-Step 6 — AgentCore Runtime is consumption-billed with **no idle charge**. See
+`infra/`. It reached **READY** and was invoked successfully, which was its whole
+job: prove the `create → deploy → invoke` loop before any real tool existed. It
+is **no longer deployed** — neither the stack nor the runtime remains in the
+account — because Step 6 builds the agent natively in `infra/` on the stable
+AgentCore L1s. The Step-3 record and its findings are kept in
 [agent/runtime/README.md](agent/runtime/README.md).
 
 ### Step 5 — the thin slice, proven
@@ -137,9 +141,11 @@ action — proven on **two matters with two distinct judgments**:
 
 - **`MTR-2026-0142`** — census `in-review`, 9 days overdue at 0.256 confidence;
   signed employer application missing and overdue; target close date passed. The
-  agent **escalates rather than sending another reminder**, citing all three
-  triggers. A second run, seeing the escalation already in the matter's history,
-  correctly does **nothing**.
+  agent **escalates rather than sending another reminder**, citing four
+  simultaneously-active triggers (both document due dates passed, the target
+  close date passed, the census unreadable, the application still missing). A
+  second run, seeing the escalation already in the matter's history, correctly
+  does **nothing**. The verbatim reasoning is in [DEMO.md](DEMO.md) §1–§2.
 - **`MTR-2026-0157`** — census *received* and `in-review` at 0.41 confidence,
   **not** overdue. The agent escalates on **data quality alone** and explicitly
   reasons that this is *not* a reminder case, because the document arrived — the
@@ -206,20 +212,62 @@ and [ADR-007](docs/decisions/ADR-007-harness-tool-injection-failure.md)):
   a verifier must not be able to see the actor's output, or it echoes intent as
   fact.
 
-**Deferred:**
+**Resolved since:**
 
-- **ADR-001 model eval** — now genuinely unblocked: the loop exists and works, so
-  "build strong, eval down" can measure decision quality (escalate / remind /
-  abstain under `toolChoice: auto`) across models. Model-invocation logging is
-  left ON for it (delivery role + log group + account-level config, tracked for
+- **ADR-001 model eval — done.** Four candidates × seven pinned scenarios ×
+  three runs, scored by a mechanical (non-LLM) rubric that disqualifies on a
+  single missed escalation. **Claude Haiku 4.5** selected on the evidence: it
+  matched Sonnet 4.6 action-for-action at roughly half the latency. Runs are
+  committed under [evals/results/](evals/results/). Model-invocation logging is
+  left ON (delivery role + log group + account-level config, tracked for
   cleanup).
-- **Cedar Policy** — deferred to `send_reminder`; the Gateway is the enforcement
-  point when it lands.
-- **Idempotency keyed on `docType`** — the escalate row SK includes the exact
-  `docType`, which came through as a composite (`census, signed-employer-
-  application`) when the agent escalated both documents at once. A different
-  `docType` value would key a separate row; revisit in the multi-touch cadence
-  pass.
+- **Idempotency keyed on `docType` — done.** The escalate row's SK is built from
+  a **normalised** `docType`, so the same decision phrased two ways
+  (`census, signed-employer-application` on one run, `census` on the next)
+  collides on one key instead of writing a second row and sending a second
+  email. A prerequisite for running the sweep unattended, not an optimisation.
+
+**Still deferred, deliberately:**
+
+- **Cedar Policy** — waits on `send_reminder`; the Gateway is the enforcement
+  point when it lands. There is no outbound tool with a real abuse surface to
+  police yet, and a policy engine guarding one SNS publish is theatre.
+- **`send_reminder`** — designed and schema-tested, blocked on a verified SES
+  sending domain (ADR-005). Its reversal trigger and the full change-set it
+  implies — including deleting the stopgap that makes the gap visible — are
+  written down in [agent/tools/README.md](agent/tools/README.md).
+
+### Step 7 — the sweep, running unattended
+
+The agent now runs on its own. An EventBridge **Scheduler** — timezone-aware, so
+it holds correct across DST, which a UTC-only Rule does not — invokes a sweep
+Lambda at **07:00 America/New_York** daily. The sweep selects candidate matters,
+runs the same `decide_and_act` core the CLI does, and dispatches through the
+same Gateway. Live in dev now: schedule `ENABLED`, `DRY_RUN=false`, all three
+alarms in `OK`.
+
+Getting there was safety engineering, not a cron entry:
+
+- **A structural pre-filter** that skips already-escalated matters *before the
+  model is called at all*, applied **before** the per-run cap — cap-then-filter
+  lets a backlog of handled matters consume the entire budget and do nothing.
+- **Per-matter error isolation.** One failing matter cannot abort the batch, and
+  its failure is written as an audit row rather than vanishing.
+- **A hard-floored `DRY_RUN`** that no invoke payload can override, plus a kill
+  switch (reserved concurrency 0) tested against both hand-invoked *and*
+  scheduled executions.
+- **Three CloudWatch alarms**, including a dead-man's switch that watches for a
+  *completion* signal rather than merely that the schedule fired. Its first
+  version watched the firing — which stayed healthy while the kill switch
+  silently blocked every execution.
+- **Caps and a valve** — bounded matters examined per run, bounded escalations
+  dispatched per run.
+
+Rolled out in deliberate stages, each verified against the persisted artifact
+rather than a script's self-report: dry-run by hand → dry-run on schedule → live
+by hand → live on schedule. Full picture in
+[docs/architecture.md](docs/architecture.md#the-unattended-sweep); it running for
+real is [DEMO.md](DEMO.md) §6.
 
 ## Layout
 
@@ -227,12 +275,17 @@ and [ADR-007](docs/decisions/ADR-007-harness-tool-injection-failure.md)):
 infra/          CDK (TypeScript) — the whole system
   bin/app.ts    entrypoint; stage from context, region pinned per stage
   lib/          config + one file per stack
-agent/          system prompt and tool definitions
-  system-prompt.md
-  tools/        the five tools and their AWS mappings
+  lambdas/      tool and pipeline handlers (Python)
+agent/          the agent itself
+  system-prompt.md  the control environment; its sha is stamped on every audit row
+  core/         decide.py — one matter, one decision
+                sweep.py  — the unattended run, its filters and caps
+  tools/        the five tools and their AWS mappings (one is built)
+  runtime/      Step-3 probe record (retired)
+evals/          scenarios.json + committed run results (ADR-001)
+docs/           architecture, ADRs, build log
+scripts/        deploy, seeder, readout, agent loop, eval and sweep operations
 web/            owner dashboard (later)
-docs/           architecture
-scripts/        deploy, synthetic data seeder
 ```
 
 ## Prerequisites
@@ -264,9 +317,15 @@ scripts/        deploy, synthetic data seeder
 - AWS CLI v2, authenticated
 - An AWS account you can bootstrap
 
-For the agent runtime (Step 3+):
+For the agent, the tool Lambdas, and the eval harness:
 
 - Python 3.10+ (tested on 3.11.9)
+
+The next two are needed **only to reproduce the retired Step-3 runtime probe**.
+Nothing in the current system uses the AgentCore CLI — the agent is built in
+`infra/` from stable L1s and runs from `agent/core/`. Kept because the Step-3
+record is still in the repo and the pinning lesson still applies:
+
 - **`uv`** (tested on 0.11.30) — `pip install uv`
 - AgentCore CLI, pinned: `npm install -g @aws/agentcore@0.24.1`
 
@@ -291,6 +350,15 @@ account or a real person:
 
 ```bash
 cp .env.example .env      # then fill in real values; .env is gitignored
+```
+
+⚠️ **Nothing auto-loads `.env`.** There is no `dotenv` here by design — the CDK
+app reads `process.env` directly, so the file is the *list of variables you must
+have exported*, not a config that takes effect on its own. Copying it and
+deploying will silently use the fallbacks. Load it first:
+
+```bash
+set -a; . ./.env; set +a          # bash / zsh
 ```
 
 | Variable | Why it is external |
@@ -366,10 +434,15 @@ lookups against whatever account they are pointed at. Do not let it default
 silently; an un-ignored `cdk.context.json` is a common way account ids leak into
 a public repo.
 
-**Deliberately deferred**, each tied to the step that needs it: DynamoDB
-single-table design with a sort key and a missing-docs-by-due-date GSI
-(recreates the table, fine in dev); VPC + PrivateLink; SES receipt rules and
-EventBridge triggers; the agent container image build pipeline.
+**Deliberately deferred**, each tied to the step that needs it: VPC +
+PrivateLink; SES **receipt** rules for inbound mail (ADR-005 — there is no
+verified domain to receive on yet); the agent container-image build pipeline
+(`CodeZip` sidesteps it until something needs a custom runtime).
+
+Two items that were on this list are now built, noted so the list stays honest:
+the single-table `PK`/`SK` schema with the missing-docs-by-due-date **`GSI1`**
+(see the `Ida-Dev-State` row above), and the EventBridge triggers — two rules
+driving the BDA pipeline, plus the Scheduler that runs the daily sweep.
 
 ## Versions
 
@@ -435,6 +508,29 @@ this build.
    (ADR-002) → readout, with **triage and the confidence gate both firing**.
    Verified in-account. Close-out, integration-reality log, and deferred items
    in [docs/step-5-notes.md](docs/step-5-notes.md).
-6. **The agent acts on this state** — next. AgentCore reasons over a matter and
-   calls `send_reminder` on the still-`missing` document. The runtime probe
-   (Step 3) and the messaging config (recipient/sender) are already in place.
+6. ~~The agent acts on this state~~ ✅ — it reads a matter, judges the single
+   next action, and escalates through the Gateway when the state warrants it,
+   writing the audit row and sending the email. The managed Harness turned out
+   not to inject tools at all, so orchestration moved client-side while the
+   Gateway kept governed execution
+   ([ADR-007](docs/decisions/ADR-007-harness-tool-injection-failure.md)).
+
+   Note the tool: **`escalate_to_human`, not `send_reminder`.** The reminder path
+   needs a verified SES domain and is deliberately still deferred — which is why
+   the agent says so explicitly when a reminder is the right call, rather than
+   escalating as a substitute.
+7. ~~Unattended operation~~ ✅ — a daily scheduled sweep with a structural
+   pre-filter, per-run caps, per-matter error isolation, a kill switch, and three
+   alarms including a dead-man's switch on completion. Staged from dry-run-by-hand
+   to live-on-schedule, verified against the persisted artifact at each stage.
+
+**Next**, in the order that unblocks the most:
+
+1. **A verified sending domain**, which unblocks `send_reminder` — the one change
+   that converts the agent's most frequent correct answer from a logged
+   observation into an action. Everything else about that tool is already
+   designed and schema-tested.
+2. **Cedar policy at the Gateway**, once there is an outbound tool whose misuse
+   would cost something real. Enforcement arrives with the thing worth enforcing.
+3. **A read-only owner view** — the 30-second status check this was built to
+   enable, promoted from a CLI readout to something a non-engineer opens.

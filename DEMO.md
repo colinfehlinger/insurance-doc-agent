@@ -18,6 +18,80 @@ the judgment.** See [architecture](docs/architecture.md).
 
 ---
 
+## The 30-second view
+
+This project started from one question: *can the person who owns these matters
+see where everything stands in half a minute?* Everything after this section
+exists to keep that view true without anyone maintaining it by hand.
+
+Here is that readout, run just now against the live table — a real script, real
+data, nothing staged:
+
+```console
+$ cd infra && npx tsx ../scripts/readout.ts
+
+============================================================
+  DOCUMENT-CHASE AGENT — MATTER READOUT (dev)
+============================================================
+
+  >>> ACTION NEEDED: 1 document(s) awaiting triage <<<
+  These arrived but could not be matched to a matter. A human
+  must place them (ADR-005) — they are never auto-assigned.
+      - unassociated/orphan-census.pdf   (unresolved-at-ingestion)
+
+  MTR-2026-0142  Northwind Manufacturing  [blocked]
+     target close 2026-08-01 · chase Dana Whitfield
+     [in-review] census  due 2026-07-25  conf=0.255859375
+     [missing]   signed-employer-application  due 2026-07-30
+     2 action(s) on record
+
+  MTR-2026-0157  Cedarline Logistics  [open]
+     target close 2026-08-15 · chase Sam Okafor
+     [in-review] census  due 2026-08-07  conf=0.412109375
+     1 action(s) on record
+
+  MTR-2026-0163  Harbor Point Foods  [open]
+     target close 2026-08-20 · chase Lee Contreras
+     [in-review] census  due 2026-08-10  conf=0.099609375
+     1 action(s) on record
+
+  MTR-2026-0184  Fairmont Dental Group  [open]
+     target close 2026-08-17 · chase Rosa Ibarra
+     [missing]   census  due 2026-07-30
+     1 action(s) on record
+
+  MTR-2026-0209  Bellweather Print Works  [open]
+     target close 2026-09-05 · chase Imani Osei
+     [missing]   signed-employer-application  due 2026-08-14
+
+============================================================
+```
+
+Read it as a map of the rest of this document:
+
+- **The triage queue is the first thing on the page, not a footnote.** A census
+  arrived that could not be matched to any matter. It sits there until a human
+  places it — the pipeline never guesses an association (ADR-005).
+- **`MTR-2026-0142` is `blocked` with 2 actions** — a reminder sent back in July,
+  then the escalation in §1. The second run in §2 added no third action, which is
+  the point of §2.
+- **`MTR-2026-0157`, `0163` and `0184` each show exactly 1 action.** `0163` and
+  `0184` were escalated by the **unattended sweep**, and the table holds 4 and 5
+  sweep audit records against them respectively — every subsequent run re-read
+  the matter, saw it was already handled, and wrote a decision record without
+  taking a second action. One action row against five runs is the pre-filter and
+  the idempotent write doing their jobs, visible from the outside.
+- **`MTR-2026-0209` has no action line at all** — because it has no actions. Its
+  only record is a single sweep audit row from this morning. That is §4: the
+  matter whose correct next step is a reminder, which the agent cannot yet send.
+  The gap shows up here as a matter the readout cannot say anything reassuring
+  about, which is exactly the right amount of alarming.
+
+Confidences print raw rather than rounded (`0.255859375`), because this readout
+is an operator tool and rounding is a judgment the operator should make.
+
+---
+
 ## 1. The core loop, on a real matter
 
 A census document lands in S3. Bedrock Data Automation classifies and extracts
@@ -190,12 +264,21 @@ every execution.
 
 ## What's next
 
-- **`send_reminder`** is designed and schema-tested but deliberately not wired
-  into production — it needs a verified sending domain
-  ([ADR-005](docs/decisions/ADR-005-document-matter-correlation.md)). The
-  capability gap is visible rather than silent in the meantime, which is the
-  point of §4.
-- **Cedar-based policy enforcement** for outbound actions, once a real outbound
-  tool exists to justify it.
-- **A read-only owner view** for the 30-second status check this was built to
-  enable.
+Three things, in the order that unblocks the most. Each is deferred on a reason,
+not on effort.
+
+- **`send_reminder`** — designed, schema-tested, waiting on exactly one thing: a
+  verified SES sending domain
+  ([ADR-005](docs/decisions/ADR-005-document-matter-correlation.md)). It is the
+  highest-leverage change left, because a reminder is the agent's most frequent
+  correct answer and today it can only say so. Shipping the tool without a
+  sending identity would mean shipping something that cannot send. So it waits —
+  and §4 is what waiting looks like when you refuse to paper over it.
+- **Cedar policy at the Gateway** — lands with the first tool whose misuse costs
+  something. One SNS publish to a named internal owner does not need a policy
+  engine; an agent that emails counterparties on a cadence does. Enforcement
+  arrives with the thing worth enforcing, and the Gateway is already the place it
+  attaches.
+- **A read-only owner view.** The 30-second readout at the top of this document
+  is real, and it is a CLI. The work left is putting it in front of the person
+  who owns the matters rather than the person who owns the terminal.
