@@ -134,17 +134,33 @@ flowchart LR
     subgraph comp["COMPLIANCE — wraps every layer"]
         direction TB
         k["KMS customer-managed key<br/>one CMK per stage, rotation on"]
-        n["VPC + PrivateLink<br/>no traffic over the public internet"]
         i["Least-privilege IAM<br/>per-function roles, no wildcards"]
         h["Human-in-the-loop<br/>low confidence + all consequential calls"]
         d["Delete-on-offboarding<br/>revoke the key, the data is gone"]
-        a["AgentCore Observability<br/>decision audit trail"]
+        a["AUDIT# rows in DynamoDB<br/>reasoning + decision + outcome,<br/>append-only, promptVersion stamped"]
+        n["VPC + PrivateLink<br/>PLANNED — not built"]
     end
 
     comp --> body["Body: pipeline"]
     comp --> brain["Brain: agent"]
-    comp --> view["View: dashboard"]
+    comp --> view["View: dashboard (later)"]
 ```
+
+**Five of these hold; one is marked planned.** VPC + PrivateLink is labelled
+rather than drawn as though it were in force — a compliance diagram that renders
+an unbuilt control identically to a built one is the same species of overclaim
+the pipeline qualification at the top of this document corrects.
+
+**On the audit-trail box.** It used to read *AgentCore Observability*. That was
+the managed Harness's leg, and it was one of two defects found in that runtime:
+its OTEL span export failed outright, which is why no trace ever appeared for
+the model request
+([ADR-007](decisions/ADR-007-harness-tool-injection-failure.md)). The audit
+trail is written by the client-side loop instead — an append-only
+`AUDIT#<timestamp>#<id>` row per decision carrying the reasoning, the decision,
+the outcome, and the sha of the system prompt that produced it. Owning it
+directly was a net gain: the compliance record no longer depends on a telemetry
+pipeline staying healthy, and the thing that broke was exactly that pipeline.
 
 ### Data residency note
 
@@ -169,11 +185,11 @@ as constructor props, not looked up by name.
 
 | Stack | Contains | Status |
 |---|---|---|
-| `Ida-Dev-Shared` | KMS CMK + alias `alias/ida-dev-data` | Real |
-| `Ida-Dev-State` | DynamoDB `ida-dev-matters` | Real |
-| `Ida-Dev-Ingestion` | S3 raw bucket | Real |
-| `Ida-Dev-Understanding` | SSM placeholder for the BDA project ARN | Stub |
-| `Ida-Dev-Agent` | SSM placeholder for the AgentCore runtime ARN | Stub |
+| `Ida-Dev-Shared` | KMS CMK + alias `alias/ida-dev-data`, rotation on | Real |
+| `Ida-Dev-State` | DynamoDB `ida-dev-matters` — single-table `PK`/`SK` + `GSI1`, CMK, PITR | Real |
+| `Ida-Dev-Ingestion` | S3 raw bucket — CMK, versioned, TLS-only, EventBridge on | Real |
+| `Ida-Dev-Understanding` | BDA project + census blueprint, submit + mapper Lambdas, 2 EventBridge rules | Real |
+| `Ida-Dev-Agent` | Gateway + `escalate_to_human` target + tool Lambda + SNS; the sweep Lambda, its EventBridge Scheduler, and 3 CloudWatch alarms | Real |
 | `ViewStack` | Defined in code, not instantiated | Later |
 
 `"@aws-cdk/core:defaultCrossStackReferences": "weak"` is set, so cross-stack
@@ -188,13 +204,20 @@ multi-deploy dance every time a resource moves between stacks.
 Each of these is deferred to the step that actually needs it, so the skeleton
 stays readable:
 
-- **DynamoDB single-table design** (sort key + GSI for missing-docs-by-due-date)
-  — lands with the thin slice. Recreates the table; fine in dev.
 - **VPC + PrivateLink** — lands with the compliance step. Nothing crosses the
   network yet.
-- **SES receipt rules, EventBridge triggers, lifecycle rules** — land with
-  ingestion.
-- **The agent container image and its build pipeline** — lands with the
-  AgentCore step. A `CfnRuntime` will not resolve without a valid image already
-  pushed at the referenced tag, so that step is ordered
-  CodeBuild → wait → runtime.
+- **SES receipt rules** for inbound mail — there is no verified domain to
+  receive on ([ADR-005](decisions/ADR-005-document-matter-correlation.md)), which
+  is the same constraint that keeps `send_reminder` unbuilt.
+- **S3 lifecycle rules** — land with a real retention policy, which is a
+  compliance decision rather than an engineering one.
+- **The agent container image and its build pipeline** — a `CfnRuntime` will not
+  resolve without a valid image already pushed at the referenced tag, so that
+  step is ordered CodeBuild → wait → runtime. `CodeZip` sidesteps it until
+  something needs a custom runtime.
+
+Two items were on this list and are now built. They stay named here so the list
+reads as a record rather than a wish: the **single-table `PK`/`SK` schema and
+`GSI1`** for missing-docs-by-due-date — the sweep above queries it — and the
+**EventBridge triggers**, two rules driving the BDA pipeline plus the Scheduler
+that runs the sweep.
