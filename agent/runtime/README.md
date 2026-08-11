@@ -118,10 +118,13 @@ the smoke test.
 
 **This is a probe-only choice.** Step 3 proves the toolchain loop, not model
 quality — the probe does no real tool selection and reasons over no matter
-state. **The production model is deliberately undecided**; reliable tool-calling
-is the real agent's entire job, and small models are typically weakest exactly
-there. Evaluation criteria are in
-[ADR-001](../../docs/decisions/ADR-001-foundation-model.md) and run in Step 5.
+state. **The production model was deliberately left undecided at this step**;
+reliable tool-calling is the real agent's entire job, and small models are
+typically weakest exactly there. It was settled afterwards by evaluation —
+**Claude Haiku 4.5** — in
+[ADR-001](../../docs/decisions/ADR-001-foundation-model.md). (The eval ran after
+Step 6 rather than Step 5 as anticipated here: it needed a working tool-selection
+surface, which Step 6 is what produced.)
 
 ## Local state — not committed
 

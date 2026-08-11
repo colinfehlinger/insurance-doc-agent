@@ -483,10 +483,11 @@ this build.
 3. ~~Prove the AgentCore toolchain — minimal Runtime, invoked once~~ ✅
 
    Runtime deployed via `agentcore deploy` (**not** `infra/`) and invoked
-   successfully; status **READY**. Model is **Amazon Nova Micro, probe-only** —
+   successfully; status **READY**. Model was **Amazon Nova Micro, probe-only** —
    the scaffold's Claude Sonnet 4.5 default is gated behind an access form in
-   this account, and the probe tests the toolchain rather than model quality.
-   The production model is deliberately undecided; see
+   this account, and the probe tested the toolchain rather than model quality.
+   The production model was left deliberately undecided at this step, and was
+   settled later by evaluation — **Claude Haiku 4.5**, see
    [ADR-001](docs/decisions/ADR-001-foundation-model.md).
 
    > ⚠️ **The container-image ordering gotcha has not been solved — it has been

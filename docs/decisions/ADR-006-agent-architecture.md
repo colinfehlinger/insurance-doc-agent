@@ -1,12 +1,30 @@
 # ADR-006 — Agent architecture, and the ADR-003 fold-in resolution
 
-**Status:** **Decided.** Build the real agent natively in `infra/` with the
+**Status:** **Decided, and partly amended.** Build the real agent natively in `infra/` with the
 stable AgentCore L1 constructs; retire the Step-3 probe and its alpha sub-project.
 **Date:** 2026-07-25
+**Amended by:** [ADR-007](ADR-007-harness-tool-injection-failure.md) (2026-07-31)
 **Resolves:** [ADR-003](ADR-003-agentcore-cdk-fold-in.md) (the deferred fold-in — Step 6 is its named trigger)
 **Related:** [ADR-001](ADR-001-foundation-model.md) (model), [ADR-005](ADR-005-document-matter-correlation.md), [agent/tools/README.md](../../agent/tools/README.md), [agent/system-prompt.md](../../agent/system-prompt.md)
 
 ---
+
+> **Read this with [ADR-007](ADR-007-harness-tool-injection-failure.md).** Two
+> things described below as available have since moved, and the text is left as
+> written because an ADR records what was decided, not what is currently true:
+>
+> - **The managed Harness does not orchestrate.** ADR-007 established that its
+>   runtime injects no tools into the model request, and retired it. This ADR's
+>   fold-in and native-L1 decisions stand; its "the Harness owns orchestration"
+>   premise does not. Orchestration runs as a client-side loop, and the Gateway
+>   still owns governed execution.
+> - **Cedar and Observability are inventoried here, not built.** The L1 surface
+>   below is read off the pinned library and is accurate as a *capability*
+>   inventory. Neither is deployed. Cedar policy waits for `send_reminder` —
+>   there is no outbound tool with a real abuse surface to police yet — and the
+>   decision audit trail is written directly to DynamoDB as append-only `AUDIT#`
+>   rows rather than through AgentCore Observability, whose span export was the
+>   second defect ADR-007 recorded.
 
 ## Context
 

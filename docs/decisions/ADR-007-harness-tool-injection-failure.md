@@ -1,10 +1,12 @@
 # ADR-007 — The managed Harness runtime did not inject tools; move orchestration client-side
 
 **Status:** **Decided.** The managed AgentCore Harness runtime does not populate
-`toolConfig` on its model request from any tool source. Keep the Gateway + tool
-Lambda + Harness resources, but move the agent **orchestration** (the reasoning
-loop and the tool-call dispatch) from the managed Harness into a client-side
-loop that calls Bedrock Converse directly and invokes the tool itself.
+`toolConfig` on its model request from any tool source. **Retire the Harness and
+its execution role; keep the Gateway, its target, the tool Lambda and the SNS
+topic** — and move the agent **orchestration** (the reasoning loop and the
+tool-call dispatch) out of the managed Harness into a client-side loop that
+calls Bedrock Converse directly and invokes the tool itself. No Harness resource
+is deployed; the reversal trigger below is what would bring one back.
 **Date:** 2026-07-31
 **Amends:** [ADR-006](ADR-006-agent-architecture.md) (the thin-client / "managed Harness auto-injects gateway tools" premise — that half no longer holds; the fold-in and native-L1 decisions stand)
 **Related:** [ADR-001](ADR-001-foundation-model.md) (model), [agent/system-prompt.md](../../agent/system-prompt.md), [docs/step-6-agent-design.md](../step-6-agent-design.md)

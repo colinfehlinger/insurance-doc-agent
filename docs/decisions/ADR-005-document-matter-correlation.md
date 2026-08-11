@@ -235,8 +235,12 @@ defect.**
 ## Consequences
 
 - **The ingestion stack cannot be finalised until the mechanism is chosen.**
-  `ingestion-stack.ts` is currently a bare raw bucket; SES receipt rules and key
-  conventions are downstream of this decision.
+  `ingestion-stack.ts` was a bare raw bucket when this was written; SES receipt
+  rules and key conventions are downstream of this decision. *(Resolved for the
+  thin slice: the key-prefix mechanism was chosen and built, and the bucket now
+  carries the CMK, versioning, TLS-only, blocked public access and
+  `eventBridgeEnabled`. SES receipt rules remain downstream and unbuilt — there
+  is still no verified domain to receive on.)*
 - Matter state needs somewhere to record *how* an association was made and with
   what confidence — the audit trail must answer "why did you think this belonged
   here", the same standard applied to extraction in `docs/architecture.md`.

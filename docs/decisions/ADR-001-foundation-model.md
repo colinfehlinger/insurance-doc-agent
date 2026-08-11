@@ -1,9 +1,44 @@
 # ADR-001 — Foundation model for the Document-Chase Agent
 
-**Status:** Partially decided. Probe model chosen; **eval fully designed and unblocked (2026-08-03)** — Step 6 shipped a working agent, so the tool-selection surface the eval needs now exists. Ready to run; not yet run.
-**Date:** 2026-07-22 · **Updated:** 2026-08-03 (eval design: candidates, scenario matrix, scoring, run sequence, measurement corrections)
+**Status:** **Decided — Claude Haiku 4.5** (`us.anthropic.claude-haiku-4-5-20251001-v1:0`) is the production model. The eval specified below was designed, run, and its results committed. Everything after the Outcome section is the record of *how* this was decided, not a plan awaiting execution.
+**Date:** 2026-07-22 · **Updated:** 2026-08-03 (eval design: candidates, scenario matrix, scoring, run sequence, measurement corrections) · **Resolved:** 2026-08-09 (eval run; outcome below)
 **Supersedes:** nothing
 **Related:** [ADR-002](ADR-002-bda-vs-textract.md) (the understanding layer picks its own model separately), [ADR-006](ADR-006-agent-architecture.md) (the agent this model runs in), [ADR-007](ADR-007-harness-tool-injection-failure.md) (retired the Harness — moves the model seam this ADR depends on)
+
+---
+
+## Outcome
+
+Four candidates × seven pinned scenarios × three runs each, scored by the
+mechanical (non-LLM) rubric specified below — which disqualifies on a single
+missed escalation rather than averaging it away.
+
+| Model | Correct | Median | p90 | Verdict |
+|---|---|---|---|---|
+| Claude Sonnet 4.6 | 21/21 | 7,035 ms | 9,921 ms | eligible |
+| Claude Haiku 4.5 | 21/21 | 3,604 ms | 4,591 ms | **selected** |
+| Amazon Nova Lite | 15/21 | 1,107 ms | 1,235 ms | disqualified |
+| Amazon Nova Micro | 15/21 | 1,007 ms | 1,379 ms | disqualified |
+
+**Haiku 4.5 matched Sonnet 4.6 action-for-action at roughly half the latency**,
+so it takes production. Both Nova models missed the overdue escalation (S1) on
+every run — the single disqualifying error class, and precisely the boundary
+this eval was built to probe — and both spuriously re-escalated an
+already-escalated matter (S3) on every run. Nova Lite additionally asserted
+false statements inside dispatched content, which is why content is scored
+separately from tool choice: picking the right tool and filling it with a
+falsehood is not a partial success.
+
+Runs are committed under [`evals/results/`](../../evals/results/); the run
+index there records which scorer and which `promptVersion` produced each file,
+including the two early runs excluded for a defective scorer.
+
+**A caveat worth keeping.** The headline table above was produced under
+`promptVersion cd004f7ecc2c`, before the `NO TOOL AVAILABLE:` instruction was
+added to the system prompt. The prompt is the control environment, so that
+change invalidates a comparison rather than extending it — a later two-model
+regression under the current prompt (`9ad7255d3d5b`) re-ran all seven scenarios
+and returned 21/21 for both Claude models again, with zero errors of any class.
 
 ---
 
