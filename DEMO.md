@@ -24,8 +24,8 @@ This project started from one question: *can the person who owns these matters
 see where everything stands in half a minute?* Everything after this section
 exists to keep that view true without anyone maintaining it by hand.
 
-Here is that readout, run just now against the live table — a real script, real
-data, nothing staged:
+Here is that readout, run on **2026-08-10** against the live table — a real
+script, real data, nothing staged:
 
 ```console
 $ cd infra && npx tsx ../scripts/readout.ts
@@ -82,7 +82,7 @@ Read it as a map of the rest of this document:
   taking a second action. One action row against five runs is the pre-filter and
   the idempotent write doing their jobs, visible from the outside.
 - **`MTR-2026-0209` has no action line at all** — because it has no actions. Its
-  only record is a single sweep audit row from this morning. That is §4: the
+  only record is a single audit row from the 2026-08-10 sweep. That is §4: the
   matter whose correct next step is a reminder, which the agent cannot yet send.
   The gap shows up here as a matter the readout cannot say anything reassuring
   about, which is exactly the right amount of alarming.
@@ -165,8 +165,9 @@ data it could not trust rather than a document it was waiting on.
 ## 4. It's honest when it can't act
 
 Production currently wires exactly one action: escalate. When a matter genuinely
-needs a *reminder* instead — `MTR-2026-0209`, a document due in four days and not
-yet overdue — the agent does not force the wrong tool into the gap:
+needs a *reminder* instead — `MTR-2026-0209`, a document due 2026-08-14, four
+days out when the agent read it on 2026-08-10 and not yet overdue — the agent
+does not force the wrong tool into the gap:
 
 > **Urgency:** Due date is approaching but not yet passed. Four days is near
 > enough to warrant immediate contact, but not so imminent that escalation is the
@@ -226,10 +227,10 @@ selection run (`evals/results/runs-20260804T082945.json`), made under
 was added. The system prompt is the control environment, so a change to it
 invalidates a comparison rather than extending it. The later two-model regression
 (`runs-20260809T194623.json`, `promptVersion 9ad7255d3d5b`, the version running
-today) re-ran all seven scenarios under the current prompt and returned **21/21
-for both models again, with zero errors of any class** — evidence that the prompt
-change did not regress action selection. Both result files are committed, so
-neither number has to be taken on trust.
+in production) re-ran all seven scenarios under the current prompt and returned
+**21/21 for both models again, with zero errors of any class** — evidence that
+the prompt change did not regress action selection. Both result files are
+committed, so neither number has to be taken on trust.
 
 ## 6. It runs unattended, safely
 
