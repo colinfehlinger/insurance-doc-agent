@@ -76,6 +76,61 @@ data-bearing resource surviving a decommission unreviewed.
 **Fine for orientation; unsafe as the basis for a deletion.** Any inventory that
 gates destruction must use per-service `list-*` / `describe-*` enumeration.
 
+## 7. A scrub that checks commit *content* but not commit *identity* reports clean
+
+A repo-wide scrub verified every blob and every commit message across all
+history and returned **zero hits** for a personal email address. The address was
+on **all 64 commits** the whole time — as the author and committer fields.
+
+A commit has content *and* identity. `git log --format=%B` and `git grep` see
+only the first. The scan was accurate, thorough, and answered a narrower
+question than the one being asked, so a clean result meant nothing.
+
+**Verify all three surfaces, and say which you checked:**
+
+```sh
+git grep -I -l -i "<string>" $(git rev-list --all)   # blobs
+git log --all --format='%B'         | grep -i "<string>"   # messages
+git log --all --format='%an <%ae> %cn <%ce>' | grep -i "<string>"   # identity
+```
+
+Also in the "content-only scan misses it" family: tag annotations, notes, and
+`.mailmap` itself.
+
+**Fix:** rewrite identity with `git filter-repo --mailmap`, then set a repo-local
+`user.email` so the next commit cannot reintroduce what the rewrite removed.
+
+**General form:** when a check clears something, ask what *surface* it covered
+before believing it. "Zero hits" is a claim about the search, not about the data.
+
+## 8. `git push --force` moves a branch pointer; it does not expire the objects
+
+A history rewrite plus a force-push made `origin/master` verifiably clean — a
+fresh clone had zero hits for every scrubbed string. The old commits were still
+served, by SHA, at their public URLs. A 24 KB file removed from history remained
+downloadable in full, along with the commit message and author email that had
+just been rewritten out.
+
+Force-pushing changes which commit a *name* points at. Unreachable objects stay
+in the remote's database until that host garbage-collects, which on GitHub does
+not happen on any schedule you control.
+
+**So a clone-and-scan does not prove removal.** It proves the branch is clean.
+Test the actual claim by requesting a known pre-rewrite SHA and confirming it
+404s:
+
+```sh
+gh api "repos/OWNER/REPO/commits/<old-sha>" --jq '.sha'
+```
+
+**Fix:** for a public repo, deleting and recreating it is the only remedy fully
+under your control — ask GitHub Support to gc if the repo has history worth
+keeping (stars, forks, issues). Either way, verify by SHA afterwards.
+
+> This is the sequel to lesson 4's sequel. Rewriting published history is not
+> one operation but two: replace the history, then destroy the copies. Doing
+> only the first is the state that looks finished.
+
 ---
 
 ## The shape they share
@@ -83,7 +138,8 @@ gates destruction must use per-service `list-*` / `describe-*` enumeration.
 Each of these is a control that **still reports success after it has stopped
 working** — an ignore rule that never applied, a check that answers a different
 question than the one asked, an assertion comparing against an impossible value,
-an inventory that omits without saying so.
+an inventory that omits without saying so, a scrub that searched one half of the
+object, a force-push that moved a label and called it a deletion.
 
 That is the same failure mode as the dead-man's switch in
 [step-6](step-6-agent-design.md): its first version watched whether the schedule
