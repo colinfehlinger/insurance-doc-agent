@@ -1,6 +1,6 @@
 # Document-Chase Agent
 
-**An AI agent that chases missing documents in a group-benefits back office —
+**An AI agent that chases missing documents in regulated back offices
 and can prove why it did what it did.**
 
 For each **matter** (a group renewal, a claim, an onboarding, a closing) it
